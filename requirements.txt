@@ -1,0 +1,9 @@
+# 基于深度强化学习的多时间尺度电力交易策略研究 - 依赖包
+# Python 3.11 | Conda env: power_trading
+
+# 核心依赖
+torch>=2.14.0
+numpy>=2.4.0
+pandas>=3.0.0
+gymnasium>=1.4.0
+matplotlib>=3.11.0
