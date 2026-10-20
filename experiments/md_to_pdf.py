@@ -32,24 +32,16 @@ OPS = {
     r"\cdot": "·", r"\times": "×", r"\pm": "±", r"\in": "∈", r"\to": "→",
     r"\rightarrow": "→", r"\sum": "Σ", r"\langle": "⟨", r"\rangle": "⟩",
     r"\setminus": "\\", r"\neq": "≠", r"\infty": "∞", r"\partial": "∂",
+    r"\sim": "∼", r"\dots": "…", r"\ldots": "…",
     r"\quad": "  ", r"\qquad": "   ", r"\,": " ", r"\;": " ", r"\:": " ",
-    r"\!": "", r"\ ": " ",
+    r"\!": "", r"\ ": " ", r"\%": "%", r"\_": "_",
 }
-FUNCS = ["dim", "max", "min", "log", "ln", "sin", "cos", "tanh", "exp",
-         "arg", "cost", "prev", "spot", "year", "month", "day", "intraday",
-         "mid", "midlong", "flex", "annual", "monthly", "ratio", "temp",
-         "total", "demand", "expected", "risk", "penalty", "saving"]
-
-SUP = {"0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵",
-       "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹", "-": "⁻", "+": "⁺",
-       "m": "ᵐ", "h": "ʰ", "n": "ⁿ"}
-
-
-def _sup(text):
-    out = []
-    for ch in text:
-        out.append(SUP.get(ch, ch))
-    return "".join(out)
+FUNCS = ["dim", "max", "min", "log", "ln", "sin", "cos", "tanh", "exp", "arg"]
+# 只表示括号大小的装饰宏: 直接丢弃 (Story 没有 TeX 的定界符尺寸概念)
+DELIM_SIZE = re.compile(r"\\(?:biggl|biggr|Biggl|Biggr|bigl|bigr|Bigl|Bigr"
+                        r"|bigg|Bigg|left|right|big|Big)(?![a-zA-Z])")
+# 函数名转带空格的英文词, 否则 "_{m,h}\max(" 会粘成 "_m,hmax("
+FUNC_MACRO = re.compile(r"\\(" + "|".join(FUNCS) + r")(?![a-zA-Z])")
 
 
 def _match_brace(s, start):
@@ -118,8 +110,10 @@ def latex_to_unicode(s):
     # \bar{X} / \bar X -> X̄ (combining macron)
     s = re.sub(r"\\bar\s*\{?([A-Za-z])\}?", lambda m: m.group(1) + "̄", s)
     s = re.sub(r"\\hat\{?([A-Za-z])\}?", lambda m: m.group(1) + "̂", s)
-    # \left \right
-    s = s.replace(r"\left", "").replace(r"\right", "")
+    # \left \right \Big 等定界符尺寸宏: 丢弃
+    s = DELIM_SIZE.sub("", s)
+    # 函数名 (需在 greek 兜底前处理, 否则退化成裸单词且无空格)
+    s = FUNC_MACRO.sub(lambda m: " " + m.group(1) + " ", s)
     # escaped braces
     s = s.replace(r"\{", "{").replace(r"\}", "}")
     # operators (before greek so \leq etc. caught)
@@ -132,27 +126,34 @@ def latex_to_unicode(s):
     # subscripts: _{...} -> _inner ; _x -> _x
     s = re.sub(r"_\{([^{}]*)\}", r"_\1", s)
     # superscripts: ^{...} -> unicode if simple, else ^inner
+    # 上标: Story 用的雅黑字体缺 Unicode 上标数字块 (⁻⁶ 会渲染成空白), 只有 Latin-1 的 ¹²³ 可靠
+    lat1 = {"1": "¹", "2": "²", "3": "³"}
+
     def sup(m):
         inner = m.group(1)
-        if re.fullmatch(r"[-+0-9mhn]+", inner):
-            return _sup(inner)
-        return "^" + inner
+        return lat1.get(inner, "^(" + inner + ")") if re.fullmatch(r"[-+0-9mhn]+", inner) \
+            else "^(" + inner + ")"
     s = re.sub(r"\^\{([^{}]*)\}", sup, s)
-    s = s.replace("^", "^")
-    # 10^6 already handled only in braces form; handle bare ^6
-    s = re.sub(r"\^(\d+)", lambda m: _sup(m.group(1)), s)
+    s = re.sub(r"\^(\d+)", lambda m: lat1.get(m.group(1), "^(" + m.group(1) + ")"), s)
     # cleanup spacing
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
+def _html_escape(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def process_math(text):
-    # display $$...$$
+    # 数学式转成 Unicode 后必须转义尖括号: "<10⁻⁶>" 这类串会被 markdown 当成 HTML 标签整段吞掉
     def disp(m):
-        return "\n\n> " + latex_to_unicode(m.group(1)) + "\n\n"
+        return "\n\n> " + _html_escape(latex_to_unicode(m.group(1))) + "\n\n"
     text = re.sub(r"\$\$(.+?)\$\$", disp, text, flags=re.S)
     # inline $...$ (avoid $$ leftovers)
-    text = re.sub(r"\$([^$\n]+?)\$", lambda m: latex_to_unicode(m.group(1)), text)
+    text = re.sub(r"\$([^$\n]+?)\$",
+                  lambda m: _html_escape(latex_to_unicode(m.group(1))), text)
+    # 正文里裸露的 "<" 同样会被当标签起点 (如 "残差 < 1e-6"); 保留 <br> 这类真标签
+    text = re.sub(r"<(?![a-zA-Z/])", "&lt;", text)
     return text
 
 
