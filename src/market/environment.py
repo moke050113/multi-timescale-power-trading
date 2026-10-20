@@ -180,10 +180,14 @@ class TradingEnvironment(gym.Env):
         cost = 0.0
         flexible_penalty = 0.0
         info = {}
+        # 本次决策所属交割月的参考电量 (现货步会推进 current_month, 故需先取)
+        basis_energy = self.settlement.reference_energy(self.current_month)
 
         if self.current_stage == self.STAGE_ANNUAL:
             new_alpha = sigmoid(ratio_raw) * MARKET_BOUNDS["annual"]["max"]
-            cost = self.settlement.settle_annual(new_alpha, self.prices["annual_price"])
+            cost = self.settlement.settle_annual(
+                new_alpha, self.prices["annual_price"], signed_step=self.current_step
+            )
             self.alpha = self.settlement.alpha
             self.current_stage = self.STAGE_MONTHLY
             self.current_step += 1
@@ -194,9 +198,10 @@ class TradingEnvironment(gym.Env):
             lo = self.alpha
             hi = MARKET_BOUNDS["monthly"]["max"]
             target_beta = lo + sigmoid(ratio_raw) * (hi - lo)
-            # 本月月度新增电量 (β_m - α)·d >= 0: 年度合同不会被推翻
+            # 本月月度新增电量 (β_m - α)·R_m >= 0: 年度合同不会被推翻
             cost = self.settlement.settle_monthly(
-                target_beta, self.prices["monthly_prices"][self.current_month], self.current_month
+                target_beta, self.prices["monthly_prices"][self.current_month],
+                self.current_month, signed_step=self.current_step
             )
             self.beta = self.settlement.beta
             self.gamma = self.settlement.gamma
@@ -210,7 +215,8 @@ class TradingEnvironment(gym.Env):
             hi = MARKET_BOUNDS["intraday"]["max"]
             target_gamma = lo + sigmoid(ratio_raw) * (hi - lo)
             cost = self.settlement.settle_intraday(
-                target_gamma, self.prices["intraday_prices"][self.current_month], self.current_month
+                target_gamma, self.prices["intraday_prices"][self.current_month],
+                self.current_month, signed_step=self.current_step
             )
             self.gamma = self.settlement.gamma
             self.current_stage = self.STAGE_SPOT
@@ -238,7 +244,7 @@ class TradingEnvironment(gym.Env):
             self.total_flexible_penalty += flexible_penalty
 
             # 无柔性调节基准 (供分析): 本月现货敞口电量按时段均分
-            month_spot_energy = self.settlement.monthly_demand * (1 - self.gamma)
+            month_spot_energy = self.settlement.reference_energy(self.current_month) * (1 - self.gamma)
             no_flex_cost = float(np.sum(spot_prices * (month_spot_energy / self.hours_per_day)))
             saving = max(0.0, no_flex_cost - cost - flexible_penalty)
             self.flexible_cost_saving += saving
@@ -262,7 +268,7 @@ class TradingEnvironment(gym.Env):
         # ---- 分阶段独立奖励 ----
         # 归一化基准 = 该步决策所覆盖的电量: 年度步用全年 Q, 月度/月内/现货步用月需求 d。
         # 这样每步奖励都是"元/MWh"量级的单位成本, 不会因为年度合同电量是月度 12 倍而淹没后续决策。
-        d = self.settlement.monthly_demand
+        d = basis_energy
         if executed_stage == "spot":
             spot_energy = max((1.0 - self.gamma) * d, self.MIN_SPOT_EXPOSURE * d)
             denom = spot_energy if self.scale_spot_reward else d

@@ -117,12 +117,12 @@ def test_monthly_energy_split():
     se = _run_plan(0.80, [0.90] * NUM_MONTHS, [0.95] * NUM_MONTHS)
     per_month = {}
     for rec in se.history:
-        if rec["stage"] == "annual" or "month" not in rec:
+        if rec["stage"] == "annual" or rec["deliver_month"] is None:
             continue
-        per_month.setdefault(rec["month"], []).append((rec["stage"], rec["quantity"]))
+        per_month.setdefault(rec["deliver_month"], []).append((rec["stage"], rec["quantity"]))
 
     d = Q / NUM_MONTHS
-    assert abs(se.monthly_demand - d) < TOL
+    assert abs(se.reference_energy(0) - d) < TOL
     # 年度合同 α·Q 相当于每月交割 α·d, 故本月三阶段新增电量之和应为 (1-α)·d
     per_month_expected = (1.0 - 0.80) * d
     for m, parts in per_month.items():
@@ -162,12 +162,56 @@ def test_price_sensitivity():
     print(f"  [PASS] 分阶段价格成本 = 手工复算 {hand:.2f} 元")
 
 
+def test_ledger_and_monthly_closure():
+    """合同台账: 每个交割月四类电量之和恰为 R_m, 费用可手算, 签约时序不倒退。"""
+    raw_R = [60, 90, 85, 70, 75, 80, 95, 100, 90, 80, 75, 65]  # 非均匀月度形状
+    se = SettlementEngine(total_demand=Q, num_months=NUM_MONTHS, monthly_reference=raw_R)
+    scale = Q / sum(raw_R)
+    assert abs(se.R.sum() - Q) < 1e-9, se.R.sum()
+    assert abs(se.reference_energy(0) - raw_R[0] * scale) < 1e-9
+
+    rng = np.random.default_rng(5)
+    alpha = 0.6
+    betas = rng.uniform(0.7, 0.95, NUM_MONTHS)
+    gammas = np.minimum(betas + rng.uniform(0.0, 0.05, NUM_MONTHS), 1.0)
+
+    step = 0
+    se.settle_annual(alpha, 300.0, signed_step=step); step += 1
+    for m in range(NUM_MONTHS):
+        se.settle_monthly(float(betas[m]), 350.0, m, signed_step=step); step += 1
+        se.settle_intraday(float(gammas[m]), 380.0, m, signed_step=step); step += 1
+        se.settle_spot(np.full(24, 420.0), m, signed_step=step); step += 1
+
+    closure = se.get_monthly_closure()
+    assert len(closure) == NUM_MONTHS
+    for m, slot in closure.items():
+        assert abs(slot["total"] - slot["reference"]) < 1e-9, (m, slot)
+        assert abs(slot["annual"] - alpha * slot["reference"]) < 1e-9, (m, slot)
+
+    ledger = se.get_ledger()
+    assert len(ledger) == NUM_MONTHS * 4, len(ledger)
+    assert all(r["signed_step"] >= 0 for r in ledger)
+    assert [r["signed_step"] for r in ledger] == sorted(r["signed_step"] for r in ledger), "签约时序倒退"
+    assert all(r["quantity"] >= -TOL for r in ledger)
+
+    hand = 0.0
+    for rec in ledger:
+        if isinstance(rec["price"], np.ndarray):
+            hand += float(np.sum(rec["price"] * rec["quantities"]))
+        else:
+            hand += rec["quantity"] * rec["price"]
+    assert abs(hand - se.get_total_cost()) < 1e-6, (hand, se.get_total_cost())
+    print(f"  [PASS] 台账 {len(ledger)} 条: 逐交割月电量闭合于 R_m, "
+          f"手算成本 {hand:,.2f} = 系统成本 {se.get_total_cost():,.2f}")
+
+
 if __name__ == "__main__":
     tests = [
         ("平价会计闭合", test_flat_price_exact),
         ("随机覆盖率/跨月下降", test_cross_month_decrease_and_random),
         ("合同不可推翻", test_no_overturn),
         ("逐月电量分配", test_monthly_energy_split),
+        ("合同台账/逐月交割", test_ledger_and_monthly_closure),
         ("柔性电量守恒", test_flexible_shift_conserves_energy),
         ("非平价成本复算", test_price_sensitivity),
     ]

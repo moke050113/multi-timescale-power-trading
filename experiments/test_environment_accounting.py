@@ -82,7 +82,7 @@ def test_no_flex_benchmark_uses_month_basis():
     # 走一遍到某月现货步前, 手工比对
     for _ in range(3):
         env.step(np.array([2.0, 0.0], dtype=np.float32))
-    d = env.settlement.monthly_demand
+    d = env.settlement.reference_energy(env.current_month)
     spot_prices = env.prices["spot_prices"][env.current_month]
     month_spot_energy = d * (1.0 - env.gamma)
     expected = float(np.sum(spot_prices * month_spot_energy / 24))
