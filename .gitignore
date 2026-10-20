@@ -57,3 +57,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+# 报告导出的中间调试文件
+report/_report_debug.html
+report/_report_raw.pdf
