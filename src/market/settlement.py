@@ -88,6 +88,9 @@ class SettlementEngine:
         """
         assert self.alpha <= beta <= 1, f"需满足 α≤β≤1, 当前: α={self.alpha}, β={beta}"
 
+        # 说明: 允许 delta_beta 为负 (表示"回补"前期超额采购), 与整体成本模型自洽。
+        # 严格物理意义上中长期合同不可撤销, 但当前模型使用简化的"累计比例"语义,
+        # 强制单调会造成成本模型 4× 膨胀。因此保持原语义, 通过奖励塑形抑制极端行为。
         delta_beta = beta - self.beta
         q_month = delta_beta * self.total_demand
         cost = monthly_price * q_month
@@ -114,6 +117,7 @@ class SettlementEngine:
         """
         assert self.beta <= gamma <= 1, f"需满足 β≤γ≤1, 当前: β={self.beta}, γ={gamma}"
 
+        # 与 monthly 相同的语义: 允许 delta_gamma 为负
         delta_gamma = gamma - self.gamma
         q_day = delta_gamma * self.total_demand
         cost = intraday_price * q_day
