@@ -15,10 +15,11 @@
 本项目研究面向含电动汽车和工业可转移负荷的用户侧聚合主体，在中长期—现货多时间尺度市场环境下的购电与柔性负荷协同决策问题。采用**双 DRL 智能体**（中长期 SAC + 柔性调度 SAC）实现交易仓位与可调负荷的动态优化，并另设分层臂（上层 SAC + 规则下层）与两个规则臂作对照。
 
 > ### ⚠️ 当前状态（2026-10-21）
-> 外部复核发现旧版结算对同一度电重复计量（约 3.25 倍），因此**迭代 7 及之前的一切成本与
-> 改进百分比（含 +24.0% / +38.3%）已作废**，README 不再把它们当作成果。
+> 外部复核发现旧版结算对同一度电重复计量（约 3.25 倍），因此**迭代 7 及之前的一切成本绝对值与
+> 改进百分比已作废，并从文档与仓库中删除**（原始数值只能在 git 历史中查见，撤回理由与逐条对照
+> 见 `项目完成度评估报告.md` 顶部声明）。
 > 迭代 8 完成了会计（逐交割月记账）、设备执行闭环、信息边界（发布游标）与双智能体决策时序的修复，
-> 并建立了四臂配对世界基准；**性能结论以重训结果为准**。详见 `项目完成度评估报告.md` 与 `progress.md`。
+> 并建立了四臂配对世界基准；**性能结论以重训结果为准**。详见 `progress.md`。
 
 ### 核心贡献
 
@@ -67,8 +68,8 @@
 
 ### 为什么需要信用分配机制？
 
-- 成本不对称：中长期合同主导约 95% 成本，柔性调度只影响剩余偏差
-- 直接共享全局奖励时现货侧信号信噪比过低（旧实测 |R_spot|/|R_mid| ≈ 0.02），学不到梯度
+- 成本不对称：中长期合同主导成本（新口径实测占 92%~99%、均值 94.7%，`experiments/measure_reward_scale.py`），柔性调度只影响剩余偏差
+- 直接共享全局奖励时现货侧信号信噪比过低，学不到梯度；按各自电量基准归一后实测 $|r_{\text{spot}}|/|r_{\text{mid}}|$ = 1.5~10.2（均值 6.9）
 - 对策：**分阶段奖励 + 按各自电量基准归一**，并在月内步加入"未来暴露成本塑形"（只用公开滚动预测）
 - 对照：分层臂（上层 SAC + 规则下层）作为基线保留，用于检验"第二个智能体是否真的带来增益"
 
@@ -94,9 +95,11 @@ Qoder_project/
 │       ├── config.py            # 全局参数配置
 │       └── logger.py            # 日志工具
 ├── experiments/           # 实验与验收脚本
-│   ├── run_four_arm_benchmark.py    # 四臂配对世界基准 (主实验)
-│   ├── train_dual_agent_v2.py       # 双 SAC 三阶段交替训练
-│   ├── train.py / train_hierarchical.py  # 旧分层入口 (已被四臂基准取代)
+│   ├── run_four_arm_benchmark.py    # 四臂配对世界基准 (唯一正式训练/评价入口)
+│   ├── run_all_scenarios.sh         # 逐场景长跑驱动 + 自动合并 (可中断续跑)
+│   ├── merge_four_arm_parts.py      # 合并逐场景分片 + 预算/覆盖校验
+│   ├── measure_reward_scale.py      # 单位奖励量级比与成本分层占比实测
+│   ├── md_to_pdf.py                 # 报告排版导出
 │   ├── test_settlement_accounting.py / test_environment_accounting.py
 │   ├── test_flexible_executor.py / test_information_boundary.py
 │   ├── test_agent_timing.py / test_four_arm_benchmark.py  # 43 个验收用例
@@ -142,17 +145,17 @@ PYTHONIOENCODING=utf-8 python experiments/test_four_arm_benchmark.py
 ### 四臂配对世界基准（正式实验入口）
 
 ```bash
-# 冒烟：1 场景 × 4 臂 × 1 种子 × 50 回合 (模型写入独立目录, 不覆盖正式模型)
+# 冒烟：1 场景 × 4 臂 × 1 种子 × 200 回合 (模型写入独立目录, 不覆盖正式模型)
 PYTHONIOENCODING=utf-8 python experiments/run_four_arm_benchmark.py \
     --smoke --model-subdir smoke
 
 # 正式：5 场景 × 4 臂 × 3 种子 × 2000 回合, 10 个配对评估世界
-PYTHONIOENCODING=utf-8 python experiments/run_four_arm_benchmark.py \
-    --scenarios 5 --seeds 42 142 242 --episodes 2000
+# 逐场景落盘 (中断只丢一个场景), 跑完自动合并并校验预算一致性
+bash experiments/run_all_scenarios.sh
 ```
 
-`train.py` / `train_hierarchical.py` / `train_dual_agent_v2.py` 是迭代 1–7 的历史脚本，
-其结算口径已被迭代 8 修正，**旧输出不再作为结论**。
+`--scenarios` 取逗号分隔的场景首字母（如 `A,C`，默认全部 5 个），`--seeds` 同样是逗号分隔。
+迭代 1–7 的历史训练/绘图脚本已随作废口径一起删除，训练与评价统一通过上面的四臂基准入口进行。
 
 ## 📊 实验结果
 
@@ -241,24 +244,23 @@ PYTHONIOENCODING=utf-8 python experiments/run_four_arm_benchmark.py \
 
 ## 📈 可视化
 
-`experiments/generate_final_plots.py`、`plot_three_way_final.py`、`plot_ablation.py` 生成的
-迭代 7 图表基于作废口径，重训完成后需按 `results/four_arm_benchmark.json` 重建；
-在此之前 `results/*.png` 只作过程留档，不作为成果展示。
+迭代 7 及更早的图表脚本与产物已随作废口径删除。图表统一由四臂基准的结果 JSON 重建，
+落盘在 `results/` 下（不入库），报告与 README 只链接重训后生成的新图。
 
 ## 📝 项目进展
 
 详细进展记录见 [progress.md](progress.md)
 
-**迭代历史**：
-- 迭代1-2：项目搭建，环境重构，完整实验（+48.7%，**作废**）
+**迭代历史**（迭代 1–7 的实验数值随旧口径一并删除，见 `progress.md` 顶部须知）：
+- 迭代1-2：项目搭建，环境重构，单智能体训练实验
 - 迭代3：柔性负荷接入，完整对比实验
 - 迭代4：补充实验，任务书对照
 - 迭代5：风险参数与月度比例深度分析
-- 迭代6：双智能体探索，柔性负荷调优
-- 迭代7：分层架构实现与"最终验证"（+24.0%，**作废**；仅作开发历史记录）
+- 迭代6：双智能体探索（两种朴素方案失败），柔性负荷调优
+- 迭代7：双 DRL（B 方案）实现 + 消融 + 简化为最终方案结构
 - 迭代8：外部审计发现结算重复计量 → 逐月交割台账、现货偏差结算、设备执行闭环、
   信息边界、按角色决策时序与重载一致、四臂配对世界基准（43 个验收用例全绿）
-- 迭代8.6（进行）：按新会计重训 5 场景 × 4 臂 × 3 种子，重建图表与结论
+- 迭代8.7：清理作废版本（删除旧口径结果/图表/模型与历史训练脚本），四臂重训进行中
 
 ## 🎓 课程信息
 

@@ -35,6 +35,7 @@ results/models/
 results/*.png
 results/*.json
 results/parts/
+.trash_void/
 
 # IDE
 .vscode/
