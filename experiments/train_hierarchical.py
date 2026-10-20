@@ -3,6 +3,9 @@
 比较: 分层(SAC+规则) vs 固定比例 vs 纯规则调度
 
 在 5 种价格场景上训练, 记录成本和柔性节约
+
+状态: 已被 experiments/run_four_arm_benchmark.py 取代 (该脚本在同一批配对世界上
+      跑齐四个臂并逐回合复核会计), 本脚本的旧结果不再作为结论。
 """
 import sys
 import os

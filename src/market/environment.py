@@ -361,6 +361,8 @@ class TradingEnvironment(gym.Env):
         规则基线的柔性强度 (只用已公布的当日前价, 不看未来实现值)。
 
         峰谷比每高出 1.0 一个单位折算 1/1.5 的择优强度, 上限 1.0; 规则基线不做 V2G。
+        (四臂基准用的是 src/agent/rule_policies.py 里的同一规则族, 该实现还带
+         转移惩罚与偏差空间约束, 只在 use_rule_dispatcher=True 的旧脚本里用到本函数。)
         """
         spread = float(spot_prices.max() - spot_prices.min())
         mean = max(float(spot_prices.mean()), 1e-9)

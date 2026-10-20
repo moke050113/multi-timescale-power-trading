@@ -6,6 +6,9 @@
 
 关键: TradingEnvironment 需实例化时 use_rule_dispatcher=True
       (现货阶段不再采用 DRL 的 flexible_action, 改用峰谷比规则给柔性强度)
+
+状态: 已被 experiments/run_four_arm_benchmark.py 的四臂基准取代,
+      本脚本产出的分层对比数字属迭代 7 旧会计, 不再作为结论。
 """
 import sys
 import os
