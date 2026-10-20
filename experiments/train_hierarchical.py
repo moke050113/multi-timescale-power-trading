@@ -133,7 +133,7 @@ def train_hierarchical(scenario, load_scenario=LOAD_SCENARIO, episodes=EPISODES)
 
     coordinator = MultiScaleCoordinator(
         state_dim=state_dim,
-        action_dim=action_dim,
+        single_action_dim=action_dim,
         use_dual_agent=False,
     )
 

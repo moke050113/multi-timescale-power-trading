@@ -31,9 +31,13 @@ class PriceScenarioGenerator:
         self.hours_per_day = SIM_PARAMS["hours_per_day"]
         self.days_per_month = SIM_PARAMS["days_per_month"]
 
-    def generate(self) -> Dict[str, np.ndarray]:
+    def generate(self, seed: Optional[int] = None) -> Dict[str, np.ndarray]:
         """
         生成完整的价格序列
+
+        Args:
+            seed: 若给定则用该种子采样 (用于固定"世界", 使不同策略在同一年价格实现上评价);
+                  None 时沿用实例自身的随机流。
 
         Returns:
             dict: {
@@ -44,6 +48,7 @@ class PriceScenarioGenerator:
             }
         """
         p = self.params
+        rng = self.rng if seed is None else np.random.default_rng(seed)
 
         # 年度价格 — 固定
         annual_price = float(p["annual"])
@@ -51,14 +56,14 @@ class PriceScenarioGenerator:
         # 月度价格 — 在基准附近加入小幅随机波动
         monthly_base = p["monthly"]
         monthly_prices = np.array([
-            monthly_base + self.rng.normal(0, monthly_base * 0.03)
+            monthly_base + rng.normal(0, monthly_base * 0.03)
             for _ in range(self.num_months)
         ])
 
         # 月内价格 — 在月度基础上再加波动
         intraday_base = p["intraday"]
         intraday_prices = np.array([
-            intraday_base + self.rng.normal(0, intraday_base * 0.04)
+            intraday_base + rng.normal(0, intraday_base * 0.04)
             for _ in range(self.num_months)
         ])
 
@@ -71,11 +76,11 @@ class PriceScenarioGenerator:
                 # 高峰时段 (9-12, 18-21) 价格上浮
                 hour_factor = 1.0
                 if 9 <= h <= 12 or 18 <= h <= 21:
-                    hour_factor = 1.2 + self.rng.uniform(0, 0.15)
+                    hour_factor = 1.2 + rng.uniform(0, 0.15)
                 elif 0 <= h <= 6:
-                    hour_factor = 0.7 + self.rng.uniform(-0.1, 0.05)
+                    hour_factor = 0.7 + rng.uniform(-0.1, 0.05)
 
-                price = max(0, spot_mean * hour_factor + self.rng.normal(0, spot_std))
+                price = max(0, spot_mean * hour_factor + rng.normal(0, spot_std))
                 spot_prices[m, h] = price
 
         return {

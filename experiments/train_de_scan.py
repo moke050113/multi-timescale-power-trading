@@ -26,7 +26,7 @@ def run_experiment(scenario_name, load_scenario, max_episodes=500, seed=42):
     state_dim = env.observation_space.shape[0]
 
     coord = MultiScaleCoordinator(
-        state_dim=state_dim, action_dim=2, use_dual_agent=False
+        state_dim=state_dim, single_action_dim=2, use_dual_agent=False
     )
     fixed = env.get_fixed_ratio_cost()
 

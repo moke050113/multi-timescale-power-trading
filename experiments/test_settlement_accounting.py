@@ -1,0 +1,184 @@
+"""
+结算会计验收测试 (审计修复路线 第 2 步)
+
+验证目标:
+    1. 平价市场下总电量恰好等于 Q, 总成本恰好等于 Q × price (消除 3.25× 双重计量)
+    2. 任一覆盖率序列 (含跨月下降) 都不产生负电量、负成本
+    3. 已成交合同不被推翻: β<α、γ<β、重复年度结算均报错
+    4. 柔性转移只改变现货电量时段分布, 不改变现货总电量
+"""
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import numpy as np
+
+from src.market.settlement import SettlementEngine
+
+PRICE = 400.0
+Q = 1000.0
+NUM_MONTHS = 12
+TOL = 1e-9
+
+
+def _run_plan(alpha, betas, gammas, flexible=None):
+    se = SettlementEngine(total_demand=Q, num_months=NUM_MONTHS)
+    se.reset()
+    se.settle_annual(alpha, PRICE)
+    prices = np.full(24, PRICE)
+    for m in range(NUM_MONTHS):
+        se.settle_monthly(betas[m], PRICE, m)
+        se.settle_intraday(gammas[m], PRICE, m)
+        shift = None if flexible is None else flexible(m)
+        se.settle_spot(prices, m, shift)
+    return se
+
+
+def _expect_error(fn, label):
+    try:
+        fn()
+    except AssertionError:
+        print(f"  [PASS] {label}: 按预期拒绝")
+        return
+    raise AssertionError(f"{label}: 期望 AssertionError, 实际未报错")
+
+
+def test_flat_price_exact():
+    """平价 400 / Q=1000 / α=0.8, β=0.9, γ=0.95 → 1000 MWh, 400000 元。"""
+    se = _run_plan(0.80, [0.90] * NUM_MONTHS, [0.95] * NUM_MONTHS)
+    energy = se.get_energy_breakdown()
+    cost = se.get_cost_breakdown()
+
+    print("平价场景电量:", {k: round(v, 6) for k, v in energy.items()})
+    print("平价场景成本:", {k: round(v, 6) for k, v in cost.items()})
+
+    assert abs(energy["annual"] - 800.0) < TOL, energy["annual"]
+    assert abs(energy["monthly"] - 100.0) < TOL, energy["monthly"]
+    assert abs(energy["intraday"] - 50.0) < TOL, energy["intraday"]
+    assert abs(energy["spot"] - 50.0) < TOL, energy["spot"]
+    assert abs(energy["total"] - Q) < 1e-6, energy["total"]
+    assert abs(cost["total"] - Q * PRICE) < 1e-6, cost["total"]
+    print("  [PASS] 平价总电量=1000 MWh, 总成本=400000 元 (无双重计量)")
+
+
+def test_cross_month_decrease_and_random():
+    """跨月覆盖率下降属于不同交割月, 但会计仍闭合、电量非负。"""
+    rng = np.random.default_rng(0)
+    for trial in range(200):
+        alpha = float(rng.uniform(0.0, 0.9))
+        betas = rng.uniform(alpha, 1.0, NUM_MONTHS)
+        gammas = rng.uniform(betas, 1.0, NUM_MONTHS)
+        se = _run_plan(alpha, betas, gammas)
+
+        energy = se.get_energy_breakdown()
+        assert abs(energy["total"] - Q) < 1e-6, (trial, energy)
+        for rec in se.history:
+            assert rec["quantity"] >= -TOL, rec
+            assert rec["cost"] >= -TOL, rec
+    print("  [PASS] 200 组随机覆盖率(含跨月下降): 总电量恒为 Q, 无负电量/负成本")
+
+
+def test_no_overturn():
+    """已成交仓位不可推翻: 违反覆盖率单调性或重复年度结算必须报错。"""
+    def annual_twice():
+        se = SettlementEngine(Q, NUM_MONTHS)
+        se.settle_annual(0.8, PRICE)
+        se.settle_annual(0.8, PRICE)
+
+    def beta_below_alpha():
+        se = SettlementEngine(Q, NUM_MONTHS)
+        se.settle_annual(0.8, PRICE)
+        se.settle_monthly(0.7, PRICE, 0)
+
+    def gamma_below_beta():
+        se = SettlementEngine(Q, NUM_MONTHS)
+        se.settle_annual(0.8, PRICE)
+        se.settle_monthly(0.9, PRICE, 0)
+        se.settle_intraday(0.85, PRICE, 0)
+
+    def spot_before_intraday_uses_beta():
+        se = SettlementEngine(Q, NUM_MONTHS)
+        se.settle_annual(0.8, PRICE)
+        se.settle_monthly(0.9, PRICE, 0)
+        se.settle_spot(np.full(24, PRICE), 0)
+        # 月内之前, 现货敞口应停留在 1-β
+        return se.get_positions()["spot_exposure"]
+
+    _expect_error(annual_twice, "重复年度结算")
+    _expect_error(beta_below_alpha, "β < α 推翻年度合同")
+    _expect_error(gamma_below_beta, "γ < β 推翻月度合同")
+    assert abs(spot_before_intraday_uses_beta() - 0.10) < TOL
+    print("  [PASS] 月内成交前现货敞口按 β 计, 不会被隐藏的高覆盖率掩盖")
+
+
+def test_monthly_energy_split():
+    """每月各阶段电量之和等于该月需求 d。"""
+    se = _run_plan(0.80, [0.90] * NUM_MONTHS, [0.95] * NUM_MONTHS)
+    per_month = {}
+    for rec in se.history:
+        if rec["stage"] == "annual" or "month" not in rec:
+            continue
+        per_month.setdefault(rec["month"], []).append((rec["stage"], rec["quantity"]))
+
+    d = Q / NUM_MONTHS
+    assert abs(se.monthly_demand - d) < TOL
+    # 年度合同 α·Q 相当于每月交割 α·d, 故本月三阶段新增电量之和应为 (1-α)·d
+    per_month_expected = (1.0 - 0.80) * d
+    for m, parts in per_month.items():
+        total = sum(q for _, q in parts)
+        assert abs(total - per_month_expected) < 1e-9, (m, parts, total)
+    assert len(per_month) == NUM_MONTHS
+    print(f"  [PASS] 每月 d = {d:.4f} MWh 中, 月度+月内+现货 = (1-α)·d = "
+          f"{per_month_expected:.4f} MWh, 年度合同补足 α·d")
+
+
+def test_flexible_shift_conserves_energy():
+    """柔性转移只重分时段的现货电量, 不改变现货总电量。"""
+    rng = np.random.default_rng(1)
+    for _ in range(50):
+        shift = rng.normal(0, 1.0, 24)
+        se = _run_plan(0.80, [0.90] * NUM_MONTHS, [0.95] * NUM_MONTHS,
+                       flexible=lambda m, s=shift: s)
+        # 敞口 = (1-0.95)*d = 50/12? 不, d=1000/12, 敞口=(1-γ)*d
+        expected = (1 - 0.95) * (Q / NUM_MONTHS)
+        assert abs(se.energy_spot - expected * NUM_MONTHS) < 1e-9, se.energy_spot
+    print("  [PASS] 50 组随机柔性扰动下现货总电量仍等于敞口电量")
+
+
+def test_price_sensitivity():
+    """非平价: 成本 = Σ 各阶段电量 × 各阶段价格 (手工复算)。"""
+    se = SettlementEngine(Q, NUM_MONTHS)
+    prices = {"annual": 300.0, "monthly": 350.0, "intraday": 380.0, "spot": 420.0}
+    se.settle_annual(0.8, prices["annual"])
+    for m in range(NUM_MONTHS):
+        se.settle_monthly(0.9, prices["monthly"], m)
+        se.settle_intraday(0.95, prices["intraday"], m)
+        se.settle_spot(np.full(24, prices["spot"]), m)
+
+    hand = (0.8 * Q * prices["annual"] + 0.1 * Q * prices["monthly"]
+            + 0.05 * Q * prices["intraday"] + 0.05 * Q * prices["spot"])
+    assert abs(se.get_total_cost() - hand) < 1e-6, (se.get_total_cost(), hand)
+    print(f"  [PASS] 分阶段价格成本 = 手工复算 {hand:.2f} 元")
+
+
+if __name__ == "__main__":
+    tests = [
+        ("平价会计闭合", test_flat_price_exact),
+        ("随机覆盖率/跨月下降", test_cross_month_decrease_and_random),
+        ("合同不可推翻", test_no_overturn),
+        ("逐月电量分配", test_monthly_energy_split),
+        ("柔性电量守恒", test_flexible_shift_conserves_energy),
+        ("非平价成本复算", test_price_sensitivity),
+    ]
+    failed = []
+    for name, fn in tests:
+        print(f"\n=== {name} ===")
+        try:
+            fn()
+        except Exception as exc:
+            failed.append((name, exc))
+            print(f"  [FAIL] {exc}")
+    print(f"\n通过 {len(tests) - len(failed)}/{len(tests)}")
+    if failed:
+        sys.exit(1)

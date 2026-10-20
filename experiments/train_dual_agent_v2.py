@@ -30,13 +30,17 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("train_dual_v2")
 
+# 评价用固定世界编号: 所有策略 (含固定比例基准) 都在同一批价格实现上评价
+NUM_EVAL_WORLDS = 5
+NUM_FINAL_WORLDS = 10
+
 
 # ============================================================
 # 训练原语
 # ============================================================
-def _run_episode(env, coordinator, deterministic=False, store_and_update=True):
+def _run_episode(env, coordinator, deterministic=False, store_and_update=True, world=None):
     """执行一个 episode, 返回 (cost, reward_m_sum, reward_s_sum, flex_saving)"""
-    state, _ = env.reset()
+    state, _ = env.reset(options=None if world is None else {"world": world})
     total_reward = 0.0
     r_m_sum = 0.0
     r_s_sum = 0.0
@@ -65,24 +69,32 @@ def _run_episode(env, coordinator, deterministic=False, store_and_update=True):
 
     return {
         "cost": info["total_cost"],
+        "market_cost": info["market_cost"],
         "flex_saving": info.get("flexible_cost_saving", 0.0),
         "flex_penalty": info.get("flexible_penalty", 0.0),
         "reward_total": total_reward,
         "r_midlong_sum": r_m_sum,
         "r_spot_sum": r_s_sum,
         "positions": info["positions"],
+        "energy": env.settlement.get_energy_breakdown(),
+        "world": info["world"],
     }
 
 
-def _evaluate(env, coordinator, num_eval: int = 5):
-    """确定性策略评估"""
+def _fixed_costs_per_world(env, num_worlds: int = NUM_EVAL_WORLDS):
+    """固定比例基准在各评价世界上的成本 (与 DRL 评价使用同一批价格实现)"""
+    return [float(env.get_fixed_ratio_cost(world=w)["total_cost"]) for w in range(num_worlds)]
+
+
+def _evaluate(env, coordinator, num_eval: int = NUM_EVAL_WORLDS):
+    """确定性策略评估: 在世界 0..num_eval-1 上逐一对比, 返回逐世界成本与柔性节约"""
     costs = []
     savings = []
-    for _ in range(num_eval):
-        r = _run_episode(env, coordinator, deterministic=True, store_and_update=False)
+    for w in range(num_eval):
+        r = _run_episode(env, coordinator, deterministic=True, store_and_update=False, world=w)
         costs.append(r["cost"])
         savings.append(r["flex_saving"])
-    return float(np.mean(costs)), float(np.mean(savings))
+    return costs, savings
 
 
 # ============================================================
@@ -123,9 +135,14 @@ def train_dual_agent(
         spot_action_scale=1.0,
     )
 
-    fixed_result = env.get_fixed_ratio_cost()
-    fixed_cost = fixed_result["total_cost"]
-    logger.info(f"固定比例基准: {fixed_cost:.0f}")
+    fixed_mid = _fixed_costs_per_world(env, NUM_EVAL_WORLDS)
+    fixed_final = _fixed_costs_per_world(env, NUM_FINAL_WORLDS)
+    fixed_cost_mid = float(np.mean(fixed_mid))
+    fixed_cost = float(np.mean(fixed_final))
+    logger.info(
+        f"固定比例基准: 中期({NUM_EVAL_WORLDS}世界)={fixed_cost_mid:.0f} "
+        f"| 最终({NUM_FINAL_WORLDS}世界)={fixed_cost:.0f}"
+    )
 
     history = []
     ep_counter = 0
@@ -162,12 +179,13 @@ def train_dual_agent(
                 )
 
             if ep_counter % eval_interval == 0:
-                ec, es = _evaluate(env, coordinator)
-                imp = (fixed_cost - ec) / fixed_cost * 100
+                ec_list, es_list = _evaluate(env, coordinator)
+                ec = float(np.mean(ec_list))
+                imp = (fixed_cost_mid - ec) / fixed_cost_mid * 100
                 buf = coordinator.get_agent_sizes()
                 logger.info(
                     f"  >> Eval Ep {ep_counter}: cost={ec:.0f} | imp={imp:+.1f}% "
-                    f"| flex={es:.0f} | buffers={buf}"
+                    f"| flex={np.mean(es_list):.0f} | buffers={buf}"
                 )
 
     if alternating:
@@ -178,12 +196,21 @@ def train_dual_agent(
         # 消融: 无交替训练, 从一开始两智能体同时联合训练
         _phase_loop("Joint-only", total_episodes, freeze_midlong=False, freeze_spot=False)
 
-    # 最终评估
-    final_cost, final_flex = _evaluate(env, coordinator, num_eval=10)
+    # 最终评估: DRL 与固定比例基准使用同一批世界 (配对评价)
+    final_costs, final_savings = _evaluate(env, coordinator, num_eval=NUM_FINAL_WORLDS)
+    final_cost = float(np.mean(final_costs))
+    final_flex = float(np.mean(final_savings))
     improvement = (fixed_cost - final_cost) / fixed_cost * 100
+    per_world = [
+        {"world": w, "fixed": fixed_final[w], "drl": final_costs[w],
+         "improvement_pct": (fixed_final[w] - final_costs[w]) / fixed_final[w] * 100}
+        for w in range(NUM_FINAL_WORLDS)
+    ]
+    pair_win = sum(1 for r in per_world if r["drl"] < r["fixed"])
     logger.info(
         f"[FINAL] {scenario}: DRL={final_cost:.0f} | Fixed={fixed_cost:.0f} "
-        f"| 改进={improvement:+.1f}% | 柔性节约={final_flex:.0f}"
+        f"| 改进={improvement:+.1f}% | 逐世界胜出={pair_win}/{NUM_FINAL_WORLDS} "
+        f"| 柔性节约={final_flex:.0f}"
     )
 
     # 保存模型
@@ -195,10 +222,14 @@ def train_dual_agent(
     return {
         "scenario": scenario,
         "load_scenario": load_scenario,
+        "seed": seed,
         "final_cost": final_cost,
         "final_flex_saving": final_flex,
         "fixed_baseline": fixed_cost,
         "improvement_vs_fixed_pct": improvement,
+        "num_final_worlds": NUM_FINAL_WORLDS,
+        "paired_win_count": pair_win,
+        "per_world": per_world,
         "history": history,
     }
 

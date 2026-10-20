@@ -34,7 +34,7 @@ def run_training(scenario_name, load_scenario="柔性适中", max_episodes=2000,
     state_dim = env.observation_space.shape[0]
 
     coordinator = MultiScaleCoordinator(
-        state_dim=state_dim, action_dim=2, use_dual_agent=False
+        state_dim=state_dim, single_action_dim=2, use_dual_agent=False
     )
 
     fixed_result = env.get_fixed_ratio_cost()

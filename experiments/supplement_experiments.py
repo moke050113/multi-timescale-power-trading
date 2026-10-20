@@ -88,7 +88,7 @@ def analyze_drl_ratios(scenario_name, load_scenario="柔性适中",
     obs, _ = env.reset()
     state_dim = env.observation_space.shape[0]
 
-    coordinator = MultiScaleCoordinator(state_dim=state_dim, action_dim=2, use_dual_agent=False)
+    coordinator = MultiScaleCoordinator(state_dim=state_dim, use_dual_agent=False)
 
     # 训练
     for ep in range(1, max_episodes + 1):

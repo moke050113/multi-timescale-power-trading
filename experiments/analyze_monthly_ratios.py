@@ -22,7 +22,7 @@ def train_and_record_monthly(scenario_name, max_episodes=1000, seed=42):
     env = TradingEnvironment(scenario_name=scenario_name, include_flexible=True, seed=seed)
     obs, _ = env.reset()
     state_dim = env.observation_space.shape[0]
-    coordinator = MultiScaleCoordinator(state_dim=state_dim, action_dim=2, use_dual_agent=False)
+    coordinator = MultiScaleCoordinator(state_dim=state_dim, single_action_dim=2, use_dual_agent=False)
 
     monthly_ratios = {m: {"alphas": [], "betas": [], "gammas": []} for m in range(12)}
 

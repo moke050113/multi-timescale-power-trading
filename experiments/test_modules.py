@@ -135,7 +135,6 @@ def test_short_training():
 
     coordinator = MultiScaleCoordinator(
         state_dim=env.observation_space.shape[0],
-        action_dim=env.action_space.shape[0],
         use_dual_agent=True,
     )
 
@@ -146,7 +145,8 @@ def test_short_training():
             stage_before = env.current_stage
             action = coordinator.select_action(state, stage_before)
             next_state, reward, terminated, truncated, info = env.step(action)
-            coordinator.store_transition(state, action, reward, next_state, terminated, stage_before)
+            # 按角色路由奖励: 各智能体只接收自己负责阶段的信号
+            coordinator.store_transition(state, action, info, next_state, terminated, stage_before)
             coordinator.update(stage=stage_before)
             total_reward += reward
             state = next_state

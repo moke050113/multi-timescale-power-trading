@@ -26,7 +26,7 @@ def train_and_record_ratios(scenario_name, risk_lambda, max_episodes=1000, seed=
     )
     obs, _ = env.reset()
     state_dim = env.observation_space.shape[0]
-    coordinator = MultiScaleCoordinator(state_dim=state_dim, action_dim=2, use_dual_agent=False)
+    coordinator = MultiScaleCoordinator(state_dim=state_dim, single_action_dim=2, use_dual_agent=False)
 
     all_ratios = []
     episode_costs = []

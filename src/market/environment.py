@@ -1,17 +1,22 @@
 """
-多时间尺度电力交易 Gym 环境 (v3.3 — 双 DRL 智能体)
+多时间尺度电力交易 Gym 环境 (v3.4 — 双 DRL 智能体 + 逐月电量会计)
 
 架构:
-    中长期智能体 (SAC): 输出 ratio_raw → α/β/γ, 负责年度/月度/月内 3 个阶段
-    现货智能体   (SAC): 输出 flexible_action ∈ [-1,1], 负责现货阶段柔性负荷调度
+    中长期智能体 (SAC): 输出 ratio_raw → α/β_m/γ_m, 负责年度/月度/月内 3 个阶段
+    现货智能体   (SAC): 输出 flexible_action ∈ [-1,1], 负责现货阶段柔性负荷时序调度
+
+改进 (v3.4):
+    - 结算改为逐月会计: 年度 α·Q 只成交一次, 月度/月内/现货按本月需求 d=Q/12 的
+      覆盖率增量结算, 保证全年成交电量恒等于 Q (修复 3.25× 双重计量)
+    - 奖励按各步决策电量基准归一化 (年度步 Q, 其余 d), 单位元/MWh
 
 改进 (v3.3):
     - 动作空间从 1 维恢复为 2 维: [ratio_raw, flexible_action]
     - 现货阶段的柔性负荷由 DRL 智能体输出决定 (非规则调度器)
     - 分阶段独立奖励:
-        reward_midlong = -contract_cost / total_demand
-        reward_spot    = -(spot_cost + penalty) / (total_demand * max(spot_exposure, 0.05))
-      现货奖励通过除以 spot_exposure 放大 5-20× 使其与中长期奖励同量级, 缓解信用分配问题
+        reward_midlong = -stage_cost / basis   (basis = Q 或 d)
+        reward_spot    = -(spot_cost + penalty) / max((1-γ)·d, 0.05·d)
+      现货奖励按敞口电量归一化为单位现货价格, 使其与中长期奖励同量级, 缓解信用分配问题
     - 保留 FlexibleDispatcher 作为对比基线 (纯规则)
 
 状态空间 (13 维):
@@ -42,7 +47,7 @@ def sigmoid(x):
 
 
 class TradingEnvironment(gym.Env):
-    """多时间尺度电力交易环境 v3.3 (双 DRL 智能体)"""
+    """多时间尺度电力交易环境 v3.4 (双 DRL 智能体)"""
 
     metadata = {"render_modes": []}
 
@@ -83,9 +88,14 @@ class TradingEnvironment(gym.Env):
         self.num_months = SIM_PARAMS["num_months"]
         self.hours_per_day = SIM_PARAMS["hours_per_day"]
 
+        # 世界种子: 同一 (world_seed, world 编号) 的价格实现可复现, 用于策略间配对评价
+        self.world_seed = SIM_PARAMS["random_seed"] if seed is None else int(seed)
+        self.current_world = None
+        self.world_cursor = 0
+
         # 子模块
         self.price_gen = PriceScenarioGenerator(scenario_name, seed=seed)
-        self.settlement = SettlementEngine(total_demand)
+        self.settlement = SettlementEngine(total_demand, num_months=self.num_months)
 
         # 柔性负荷模型
         if include_flexible:
@@ -131,9 +141,18 @@ class TradingEnvironment(gym.Env):
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> Tuple[np.ndarray, Dict]:
         super().reset(seed=seed)
         if seed is not None:
+            self.world_seed = int(seed)
             self.price_gen.rng = np.random.default_rng(seed)
+            self.world_cursor = 0
 
-        self.prices = self.price_gen.generate()
+        world = None if options is None else options.get("world")
+        if world is None:
+            self.prices = self.price_gen.generate()
+            self.current_world = self.world_cursor
+        else:
+            self.prices = self.price_gen.generate(seed=[self.world_seed, int(world)])
+            self.current_world = int(world)
+        self.world_cursor += 1
         self.settlement.reset()
 
         self.current_step = 0
@@ -175,11 +194,12 @@ class TradingEnvironment(gym.Env):
             lo = self.alpha
             hi = MARKET_BOUNDS["monthly"]["max"]
             target_beta = lo + sigmoid(ratio_raw) * (hi - lo)
-            # settlement 内部保证跨月不回溯 (delta_beta>=0)
+            # 本月月度新增电量 (β_m - α)·d >= 0: 年度合同不会被推翻
             cost = self.settlement.settle_monthly(
                 target_beta, self.prices["monthly_prices"][self.current_month], self.current_month
             )
             self.beta = self.settlement.beta
+            self.gamma = self.settlement.gamma
             self.current_stage = self.STAGE_INTRADAY
             self.current_step += 1
             info["stage"] = "monthly"
@@ -217,8 +237,9 @@ class TradingEnvironment(gym.Env):
             self.monthly_spot_costs.append(cost)
             self.total_flexible_penalty += flexible_penalty
 
-            # 无柔性调节基准 (供分析)
-            no_flex_cost = float(np.sum(spot_prices * (self.total_demand * (1 - self.gamma) / 24)))
+            # 无柔性调节基准 (供分析): 本月现货敞口电量按时段均分
+            month_spot_energy = self.settlement.monthly_demand * (1 - self.gamma)
+            no_flex_cost = float(np.sum(spot_prices * (month_spot_energy / self.hours_per_day)))
             saving = max(0.0, no_flex_cost - cost - flexible_penalty)
             self.flexible_cost_saving += saving
 
@@ -239,28 +260,31 @@ class TradingEnvironment(gym.Env):
         executed_stage = info.get("stage")
 
         # ---- 分阶段独立奖励 ----
+        # 归一化基准 = 该步决策所覆盖的电量: 年度步用全年 Q, 月度/月内/现货步用月需求 d。
+        # 这样每步奖励都是"元/MWh"量级的单位成本, 不会因为年度合同电量是月度 12 倍而淹没后续决策。
+        d = self.settlement.monthly_demand
         if executed_stage == "spot":
-            spot_exposure = max(1.0 - self.gamma, self.MIN_SPOT_EXPOSURE)
-            denom = self.total_demand * spot_exposure if self.scale_spot_reward else self.total_demand
+            spot_energy = max((1.0 - self.gamma) * d, self.MIN_SPOT_EXPOSURE * d)
+            denom = spot_energy if self.scale_spot_reward else d
             reward_spot = -(cost + flexible_penalty) / denom
             reward_midlong = 0.0
             reward_global = reward_spot
         else:
-            reward_midlong = -cost / self.total_demand
+            basis = self.total_demand if executed_stage == "annual" else d
+            reward_midlong = -cost / basis
             # 关键奖励塑形: 中长期智能体的 γ 决策会导致本月剩余电量流入现货市场,
             # 若不感知该成本, 智能体没有保持高覆盖率的动力 (credit assignment 反向问题)
             if executed_stage == "intraday" and self.exposure_shaping:
                 # 使用场景的现货均价作为"未来成本预估", 避免完美预见具体月价格
                 expected_spot = self.price_gen.params["spot_mean"]
-                exposure_cost = (1.0 - self.gamma) * self.total_demand * expected_spot
-                reward_midlong -= exposure_cost / self.total_demand
+                reward_midlong -= (1.0 - self.gamma) * expected_spot
             reward_spot = 0.0
             reward_global = reward_midlong
 
         # CVaR 风险项: 只施加于中长期智能体 (它决定 γ → 暴露)
         if self.risk_lambda > 0 and len(self.monthly_spot_costs) >= 3 and executed_stage == "intraday":
             cvar = self.settlement.compute_cvar(self.monthly_spot_costs, DRL_PARAMS["cvar_eta"])
-            risk_term = self.risk_lambda * cvar / self.total_demand
+            risk_term = self.risk_lambda * cvar / d
             reward_midlong -= risk_term
             reward_global -= risk_term
 
@@ -377,6 +401,7 @@ class TradingEnvironment(gym.Env):
         return {
             "step": self.current_step,
             "month": self.current_month,
+            "world": self.current_world,
             "stage": self.current_stage,
             "positions": self.settlement.get_positions(),
             "cost_breakdown": self.settlement.get_cost_breakdown(),
@@ -392,10 +417,10 @@ class TradingEnvironment(gym.Env):
         """统一成本口径: 市场成本 + 柔性转移惩罚"""
         return self.settlement.get_total_cost() + self.total_flexible_penalty
 
-    def get_fixed_ratio_cost(self) -> Dict:
-        """固定比例策略基准 (无柔性负荷)"""
+    def get_fixed_ratio_cost(self, world: Optional[int] = None) -> Dict:
+        """固定比例策略基准 (无柔性负荷); world 给定时在该价格实现上评价, 便于与 DRL 配对比较"""
         from ..utils.config import FIXED_RATIOS
-        self.reset()
+        self.reset(options=None if world is None else {"world": world})
         total_cost = 0.0
         alpha = FIXED_RATIOS["alpha"]
         total_cost += self.settlement.settle_annual(alpha, self.prices["annual_price"])
