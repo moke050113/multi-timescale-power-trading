@@ -10,20 +10,26 @@
 
     各阶段**新增**成交电量 (每批合同都是一条台账记录):
         Q^Y_m = α · R_m              年度合同, 交割月 m
-        Q^M_m = (β_m − α) · R_m      月度合同, 交割月 m
-        Q^I_m = (γ_m − β_m) · R_m    月内合同, 交割月 m
-        Q^S_m = (1 − γ_m) · R_m      现货敞口, 交割月 m
+        Q^M_m = (β_m - α) · R_m      月度合同, 交割月 m
+        Q^I_m = (γ_m - β_m) · R_m    月内合同, 交割月 m
+        Q^S_m = A_m - γ_m · R_m      现货/偏差净电量, 交割月 m
 
-    恒等式: Q^Y_m + Q^M_m + Q^I_m + Q^S_m = R_m,  Σ_m R_m = Q
+    A_m = 设备执行后的本月实际网侧净需求 (MWh)。不执行柔性调度时 A_m = R_m,
+    此时恒等式 Q^Y_m + Q^M_m + Q^I_m + Q^S_m = R_m, Σ_m R_m = Q 闭合;
+    执行柔性调度后 A_m 会因 EV 往返损耗 / V2G 放电偏离 R_m, 台账同时记录两者。
 
-因此平价市场下全年成交电量恒等于 Q, 总成本恰为 Q × price。
 覆盖率单调性 (β_m ≥ α, γ_m ≥ β_m) 由断言保证, 而不是把负增量裁成 0:
 已签合同不可撤销, 下月覆盖率可以降低属于不同交割月, 不冲销上月合同。
+
+偏差处理规则 (明确写在结算里, 不隐含在数组缩放里):
+    缺口 (Δ_h > 0) 按该时段现货价 1:1 买入 —— 现货就是残余市场, 不再叠加惩罚项;
+    过购 (Δ_h < 0) 按该时段现货价 × (1 - sell_discount) 回售, 代表批零价差,
+                   且绝不以退款形式冲销已签合同成本。
 """
 import numpy as np
 from typing import Dict, Optional, Sequence
 
-from ..utils.config import TOTAL_DEMAND, SIM_PARAMS
+from ..utils.config import SETTLEMENT_PARAMS, SIM_PARAMS, TOTAL_DEMAND
 
 
 class SettlementEngine:
@@ -34,9 +40,12 @@ class SettlementEngine:
         total_demand: float = TOTAL_DEMAND,
         num_months: int = SIM_PARAMS["num_months"],
         monthly_reference: Optional[Sequence[float]] = None,
+        sell_discount: Optional[float] = None,
     ):
         self.total_demand = float(total_demand)
         self.num_months = int(num_months)
+        self.sell_discount = (SETTLEMENT_PARAMS["sell_discount"]
+                              if sell_discount is None else float(sell_discount))
         self.R = self._build_reference(monthly_reference)
 
         self._clear_state()
@@ -71,6 +80,10 @@ class SettlementEngine:
         # 合同台账: 每批合同一条记录 (数量/价格/签约序号/交割月)
         self.contracts = []
         self._contract_seq = 0
+        # 逐月实际净需求 (设备执行结果), 由 settle_spot 写入
+        self.actual_demand = np.zeros(self.num_months)
+        self.last_spot_deviation = 0.0
+        self.last_spot_energy_abs = 0.0
 
     def reset(self):
         """重置所有仓位、成本、电量与台账。"""
@@ -87,12 +100,14 @@ class SettlementEngine:
                 quantity: float, price: float, cost: float, **coverage):
         """写入一条合同台账 (同时充当交易历史)。"""
         self._contract_seq += 1
+        price_val = (np.asarray(price, dtype=float).copy()
+                     if isinstance(price, (np.ndarray, list, tuple)) else float(price))
         record = {
             "contract_id": self._contract_seq,
             "stage": stage,
             "signed_step": self._contract_seq - 1 if signed_step is None else int(signed_step),
             "deliver_month": None if deliver_month is None else int(deliver_month),
-            "price": float(price),
+            "price": price_val,
             "quantity": float(quantity),
             "cost": float(cost),
             **coverage,
@@ -110,16 +125,22 @@ class SettlementEngine:
         return self.contracts
 
     def get_monthly_closure(self) -> Dict[int, Dict[str, float]]:
-        """按交割月汇总电量, 用于验收 R_m 是否被完整覆盖。"""
+        """按交割月汇总电量, 用于验收 R_m 是否被完整覆盖、偏差是否等于实际净需求。"""
         out = {}
         for rec in self.contracts:
             m = rec["deliver_month"]
             if m is None:
                 continue
             slot = out.setdefault(m, {"annual": 0.0, "monthly": 0.0, "intraday": 0.0,
-                                      "spot": 0.0, "total": 0.0, "reference": self.reference_energy(m)})
+                                      "spot": 0.0, "total": 0.0,
+                                      "reference": self.reference_energy(m),
+                                      "contract": 0.0, "actual_energy": self.reference_energy(m)})
             slot[rec["stage"]] += rec["quantity"]
             slot["total"] += rec["quantity"]
+            if rec["stage"] != "spot":
+                slot["contract"] += rec["quantity"]
+            if rec["stage"] == "spot":
+                slot["actual_energy"] = rec["actual_energy"]
         return out
 
     # ------------------------------------------------------------
@@ -147,7 +168,7 @@ class SettlementEngine:
 
     def settle_monthly(self, beta: float, monthly_price: float, month_idx: int,
                        signed_step: Optional[int] = None) -> float:
-        """月度交易结算: 本月新增 (β_m − α)·R_m。"""
+        """月度交易结算: 本月新增 (β_m - α)·R_m。"""
         self._check_month(month_idx)
         assert self.alpha <= beta <= 1, f"需满足 α≤β≤1, 当前: α={self.alpha}, β={beta}"
 
@@ -168,7 +189,7 @@ class SettlementEngine:
 
     def settle_intraday(self, gamma: float, intraday_price: float, month_idx: int,
                         signed_step: Optional[int] = None) -> float:
-        """月内交易结算: 本月新增 (γ_m − β_m)·R_m。"""
+        """月内交易结算: 本月新增 (γ_m - β_m)·R_m。"""
         self._check_month(month_idx)
         assert self.beta <= gamma <= 1, f"需满足 β≤γ≤1, 当前: β={self.beta}, γ={gamma}"
 
@@ -186,44 +207,63 @@ class SettlementEngine:
         return cost
 
     def settle_spot(self, spot_prices: np.ndarray, month_idx: int,
-                    flexible_shift: np.ndarray = None,
+                    demand_hourly: Optional[np.ndarray] = None,
                     signed_step: Optional[int] = None) -> float:
         """
-        现货结算: 本月敞口电量 (1 − γ_m)·R_m 按时段分配。
+        现货 / 偏差结算: 本月实际净需求与已签合同电量之差在现货市场出清。
 
         Args:
-            spot_prices: 当月各时段现货价格 (24,)
-            month_idx: 月份索引
-            flexible_shift: 各时段负荷调整量 (MWh), 正值=增载, 负值=减载。
-                当前视为纯时序转移 (总电量不变), 只改变敞口电量在各时段的分布。
+            spot_prices: 当月各时段现货价格 (24,), 元/MWh
+            month_idx: 交割月索引
+            demand_hourly: 设备执行后的本月逐时段网侧电量 (MWh, shape=(24,), 已含该月天数)。
+                None → 按 R_m 均匀分布, 即"不执行柔性调度"的基准口径。
+            signed_step: 签约时序 (台账字段)
+
+        规则 (不做重归一化, 不隐含缩放):
+            A_m   = Σ_h demand_h                       实际净需求
+            ΔE_h  = demand_h · (1 - γ_m·R_m / A_m)     逐时段偏差电量
+            ΔE_h > 0 → 按该时段现货价 1:1 买入
+            ΔE_h < 0 → 按该时段现货价 × (1 - sell_discount) 回售 (负成本=收入)
         """
         self._check_month(month_idx)
-        spot_ratio = 1.0 - self.gamma
-        q_spot_total = spot_ratio * self.reference_energy(month_idx)
-
         hours = self.hours_per_day()
-        base_load = np.full(hours, q_spot_total / hours)
+        ref = self.reference_energy(month_idx)
+        contract_energy = self.gamma * ref
 
-        if flexible_shift is not None:
-            adjusted_load = np.maximum(base_load + np.asarray(flexible_shift, dtype=float), 0.0)
+        if demand_hourly is None:
+            demand = np.full(hours, ref / hours)
         else:
-            adjusted_load = base_load
+            demand = np.asarray(demand_hourly, dtype=float)
+            assert demand.shape == (hours,), f"demand_hourly 长度须为 {hours}, 当前 {demand.shape}"
+            assert np.all(demand >= -1e-9), f"网侧净需求不得为负: min={demand.min():.6f}"
 
-        total_load = adjusted_load.sum()
-        if total_load > 0:
-            hourly_qty = adjusted_load / total_load * q_spot_total
-        else:
-            hourly_qty = base_load.copy() if q_spot_total > 0 else adjusted_load
+        actual_energy = float(demand.sum())
+        assert actual_energy > 1e-12, "本月实际净需求为 0, 无法结算偏差"
+        self.actual_demand[month_idx] = actual_energy
 
+        deviation = demand * (1.0 - contract_energy / actual_energy)
         prices = np.asarray(spot_prices, dtype=float)
-        cost = float(np.sum(prices * hourly_qty))
+        assert prices.shape == (hours,), f"现货价格长度须为 {hours}, 当前 {prices.shape}"
+
+        buy_qty = np.maximum(deviation, 0.0)
+        sell_qty = np.minimum(deviation, 0.0)
+        cost = float(np.sum(prices * buy_qty)
+                     + (1.0 - self.sell_discount) * np.sum(prices * sell_qty))
+        spot_ratio = float(deviation.sum() / ref) if ref > 0 else 0.0
 
         self.cost_spot += cost
-        self.energy_spot += float(hourly_qty.sum())
+        self.energy_spot += float(deviation.sum())
+        self.last_spot_deviation = float(deviation.sum())
+        self.last_spot_energy_abs = float(np.abs(deviation).sum())
 
         self._record("spot", deliver_month=month_idx, signed_step=signed_step,
-                     quantity=float(hourly_qty.sum()), price=prices, cost=cost,
-                     spot_ratio=spot_ratio, quantities=hourly_qty)
+                     quantity=float(deviation.sum()), price=prices, cost=cost,
+                     spot_ratio=spot_ratio, quantities=deviation,
+                     reference_energy=ref, contract_energy=contract_energy,
+                     actual_energy=actual_energy,
+                     buy_energy=float(buy_qty.sum()),
+                     sell_energy=float(-sell_qty.sum()),
+                     sell_discount=self.sell_discount)
         return cost
 
     def _check_month(self, month_idx: int):
@@ -234,7 +274,7 @@ class SettlementEngine:
 
     @staticmethod
     def hours_per_day():
-        return 24
+        return SIM_PARAMS["hours_per_day"]
 
     def get_total_cost(self) -> float:
         """获取总购电成本。"""
@@ -270,11 +310,6 @@ class SettlementEngine:
             "spot_exposure": 1.0 - self.gamma,
             "annual_reference": self.total_demand,
         }
-
-    def _record(self, stage: str, **kwargs):
-        """记录交易历史。"""
-        record = {"stage": stage, **kwargs}
-        self.history.append(record)
 
     def compute_cvar(self, spot_costs: list, eta: float = 0.95) -> float:
         """

@@ -2,10 +2,10 @@
 结算会计验收测试 (审计修复路线 第 2 步)
 
 验证目标:
-    1. 平价市场下总电量恰好等于 Q, 总成本恰好等于 Q × price (消除 3.25× 双重计量)
-    2. 任一覆盖率序列 (含跨月下降) 都不产生负电量、负成本
+    1. 平价市场下合同电量恒等于 Q, 成本恒等于 Q × price (消除 3.25× 双重计量)
+    2. 任一覆盖率序列 (含跨月下降) 都不产生负合同电量、负合同成本
     3. 已成交合同不被推翻: β<α、γ<β、重复年度结算均报错
-    4. 柔性转移只改变现货电量时段分布, 不改变现货总电量
+    4. 现货/偏差电量 = 设备执行后的实际需求 - 合同量; 过购按折价回售, 不冲销合同成本
 """
 import sys
 import os
@@ -22,7 +22,7 @@ NUM_MONTHS = 12
 TOL = 1e-9
 
 
-def _run_plan(alpha, betas, gammas, flexible=None):
+def _run_plan(alpha, betas, gammas, demand=None):
     se = SettlementEngine(total_demand=Q, num_months=NUM_MONTHS)
     se.reset()
     se.settle_annual(alpha, PRICE)
@@ -30,8 +30,8 @@ def _run_plan(alpha, betas, gammas, flexible=None):
     for m in range(NUM_MONTHS):
         se.settle_monthly(betas[m], PRICE, m)
         se.settle_intraday(gammas[m], PRICE, m)
-        shift = None if flexible is None else flexible(m)
-        se.settle_spot(prices, m, shift)
+        q = None if demand is None else demand(m)
+        se.settle_spot(prices, m, q)
     return se
 
 
@@ -133,17 +133,45 @@ def test_monthly_energy_split():
           f"{per_month_expected:.4f} MWh, 年度合同补足 α·d")
 
 
-def test_flexible_shift_conserves_energy():
-    """柔性转移只重分时段的现货电量, 不改变现货总电量。"""
+def test_spot_residual_tracks_actual_demand():
+    """现货/偏差结算: 电量 = A_m - γ_m·R_m; 平价下成本 = 偏差 × price (不再重归一化)。"""
     rng = np.random.default_rng(1)
+    gamma = 0.95
     for _ in range(50):
-        shift = rng.normal(0, 1.0, 24)
-        se = _run_plan(0.80, [0.90] * NUM_MONTHS, [0.95] * NUM_MONTHS,
-                       flexible=lambda m, s=shift: s)
-        # 敞口 = (1-0.95)*d = 50/12? 不, d=1000/12, 敞口=(1-γ)*d
-        expected = (1 - 0.95) * (Q / NUM_MONTHS)
-        assert abs(se.energy_spot - expected * NUM_MONTHS) < 1e-9, se.energy_spot
-    print("  [PASS] 50 组随机柔性扰动下现货总电量仍等于敞口电量")
+        # 任意"执行后"逐时段净需求 (非负, 总量 ≥ R_m ⇒ 全部为缺口买入)
+        shape = np.abs(rng.normal(1.0, 0.25, 24))
+        demand = shape / shape.sum() * (Q / NUM_MONTHS) * rng.uniform(1.0, 1.25)
+        se = SettlementEngine(Q, NUM_MONTHS)
+        se.settle_annual(0.80, PRICE)
+        for m in range(NUM_MONTHS):
+            se.settle_monthly(0.90, PRICE, m)
+            se.settle_intraday(gamma, PRICE, m)
+            se.settle_spot(np.full(24, PRICE), m, demand)
+        actual = float(se.actual_demand.sum())
+        assert abs(se.energy_spot - (actual - gamma * Q)) < 1e-9, (se.energy_spot, actual)
+        assert abs(se.get_total_cost() - PRICE * actual) < 1e-6, se.get_total_cost()
+    print("  [PASS] 50 组随机执行结果: 现货电量 = 实际需求 - 合同量, 平价成本可手算")
+
+
+def test_surplus_is_discounted_not_refunded():
+    """过购 (A_m < γ·R_m) 按折价回售: 现货成本为负但幅度小于合同成本, 已签合同不被冲销。"""
+    se = SettlementEngine(Q, NUM_MONTHS)
+    se.settle_annual(0.80, PRICE)
+    ref = se.reference_energy(0)
+    se.settle_monthly(0.95, PRICE, 0)
+    se.settle_intraday(0.95, PRICE, 0)
+    demand = np.full(24, 0.5 * ref / 24)  # 实际需求只有 R_m 的一半, 合同必然过购
+    spot = se.settle_spot(np.full(24, PRICE), 0, demand)
+    contract = se.gamma * ref
+    assert spot < 0, spot
+    assert abs(spot + PRICE * (contract - float(demand.sum()))
+               * (1 - se.sell_discount)) < 1e-9, spot
+    assert abs(spot) < PRICE * contract, (spot, contract)  # 回售收入小于该月已付合同成本
+    assert se.cost_annual > 0 and se.cost_monthly > 0
+    closure = se.get_monthly_closure()[0]
+    assert abs(closure["total"] - closure["actual_energy"]) < 1e-9, closure
+    print(f"  [PASS] 过购回售 {spot:,.0f} 元 (折价 {se.sell_discount:.0%}), "
+          f"合同成本 {se.cost_annual + se.cost_monthly:,.0f} 元保持不变, 无退款冲销")
 
 
 def test_price_sensitivity():
@@ -212,7 +240,8 @@ if __name__ == "__main__":
         ("合同不可推翻", test_no_overturn),
         ("逐月电量分配", test_monthly_energy_split),
         ("合同台账/逐月交割", test_ledger_and_monthly_closure),
-        ("柔性电量守恒", test_flexible_shift_conserves_energy),
+        ("现货偏差跟随实际需求", test_spot_residual_tracks_actual_demand),
+        ("过购折价回售不退款", test_surplus_is_discounted_not_refunded),
         ("非平价成本复算", test_price_sensitivity),
     ]
     failed = []

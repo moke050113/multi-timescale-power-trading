@@ -1,10 +1,11 @@
 """
 分层架构训练脚本 (v3 — 兼容 B 方案改造后的环境)
 
-上层 SAC (1D: ratio_raw) + 下层规则调度器 (环境内 FlexibleDispatcher)
+上层 SAC (1D: ratio_raw) + 下层规则柔性强度 (环境内 _rule_intensity + FlexibleExecutor 执行)
 用于与双智能体 B 方案做对比实验。
 
 关键: TradingEnvironment 需实例化时 use_rule_dispatcher=True
+      (现货阶段不再采用 DRL 的 flexible_action, 改用峰谷比规则给柔性强度)
 """
 import sys
 import os

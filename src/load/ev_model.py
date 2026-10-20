@@ -32,6 +32,9 @@ class EVLoadModel:
         self.soc_min = self.p["soc_min"]
         self.soc_max = self.p["soc_max"]
         self.target_soc = self.p["target_soc"]
+        self.soc_start = self.p.get("soc_start", self.soc_min)   # 到站初始 SOC
+        self.charge_eff = self.p.get("charge_eff", 1.0)          # 网侧→电池
+        self.discharge_eff = self.p.get("discharge_eff", 1.0)    # 电池→网侧
         self.arrive_hour = self.p["arrive_hour"]
         self.depart_hour = self.p["depart_hour"]
         self.hours = SIM_PARAMS["hours_per_day"]
