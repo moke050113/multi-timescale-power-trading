@@ -3,7 +3,7 @@
 
 验证:
     1. 环境 2D 动作 + 分阶段奖励正确输出
-    2. 结算引擎跨月不回溯
+    2. 结算按交割月记账, 上月合同不退款冲销
     3. 协调器路由 / 冻结 / 更新
     4. 单 episode 端到端可跑通
 """
@@ -49,13 +49,12 @@ def test_env_episode_with_dual_output():
 
     assert step == 37, f"应有 37 步 (1 annual + 12*(1 monthly + 1 intraday + 1 spot)), 实际 {step}"
     assert total_cost > 0
-    # 中长期阶段 3 步 (annual) + 12*2 (monthly+intraday) = 27
-    # 现货阶段 12 步
+    # 中长期 25 步 (1 annual + 12*(monthly+intraday)) + 现货 12 步 = 37
     print(f"[OK] Episode 37 steps | cost={total_cost:,.0f} | R_mid_sum={rm_sum:.2f} | R_spot_sum={rs_sum:.2f}")
 
 
 def test_settlement_semantics():
-    """验证结算引擎累计比例语义 (允许 delta 为负, 与整体成本模型自洽)"""
+    """验证覆盖率比例语义: 每层覆盖率落在 [0,1], 下月可以下调且不冲销上月合同"""
     env = TradingEnvironment(seed=7)
     state, _ = env.reset()
     betas = []
@@ -81,7 +80,7 @@ def test_settlement_semantics():
         if term or trunc:
             break
 
-    # 关键约束: α ≤ β, β ≤ γ ≤ 1 (在每次决策时)
+    # 关键约束: 覆盖率落在 [0,1] (逐层覆盖率可升可降, 但已签合同永不退款冲销)
     assert all(0 <= b <= 1 for b in betas)
     assert all(0 <= g <= 1 for g in gammas)
     print(
@@ -101,20 +100,38 @@ def test_coordinator_routing():
     a_spot = coord.select_action(state, stage=3)
     assert a_spot.shape == (2,) and a_spot[0] == 0.0
 
-    # 存储路由: 冻结 spot 时不存 spot 经验
+    # 存储路由: 冻结 spot 时既不写经验也不留挂起决策
     coord.set_training_phase(freeze_midlong=False, freeze_spot=True)
     n0 = len(coord.spot_agent.replay_buffer)
     coord.store_transition(state, a_spot, {"reward_midlong": 0.0, "reward_spot": -1.0}, state, False, stage=3)
     assert len(coord.spot_agent.replay_buffer) == n0, "冻结时不应写入 spot 经验池"
+    assert coord._pending["spot"] is None, "冻结时不应留下挂起决策"
 
+    # 半 MDP: 一次中长期决策要等到该角色下一次决策到达才闭合
+    coord.begin_episode()
+    coord.set_training_phase(freeze_midlong=False, freeze_spot=False)
     coord.store_transition(state, a_mid, {"reward_midlong": -1.0, "reward_spot": 0.0}, state, False, stage=0)
-    assert len(coord.midlong_agent.replay_buffer) > 0
+    assert len(coord.midlong_agent.replay_buffer) == 0, "未等到下一次中长期决策前不应入库"
+    assert coord._pending["midlong"] is not None
 
-    print("[OK] 协调器路由与冻结逻辑")
+    state2 = np.ones(13, dtype=np.float32)
+    coord.store_transition(state2, a_mid, {"reward_midlong": -1.0, "reward_spot": 0.0}, state2, False, stage=1)
+    buf = coord.midlong_agent.replay_buffer.buffer
+    assert len(buf) == 1, len(buf)
+    assert np.allclose(buf[0][3], state2, atol=1e-6), "后继状态应是本角色下一次决策的观察"
+    assert np.asarray(buf[0][1]).shape == (1,) and buf[0][1][0] == a_mid[0], "中长期只学 ratio 维度"
+
+    # 回合以现货步终止: 中长期挂起决策按终止闭合, 不再 bootstrap
+    coord.store_transition(state2, a_spot, {"reward_midlong": 0.0, "reward_spot": -1.0}, state2, True, stage=3)
+    assert len(coord.midlong_agent.replay_buffer) == 2, len(coord.midlong_agent.replay_buffer)
+    assert coord._pending["midlong"] is None and coord._pending["spot"] is None
+    assert coord.spot_agent.replay_buffer.buffer[-1][1][0] == a_spot[1], "柔性调度只学强度维度"
+
+    print("[OK] 协调器路由、冻结逻辑与按角色决策序列闭合")
 
 
 def test_reward_scaling():
-    """现货奖励应显著大于中长期 (放大效应)"""
+    """分阶段奖励应按各自电量基准归一, 两个信号量级可比 (否则柔性调度学不到东西)"""
     env = TradingEnvironment(scenario_name="D_现货高波动", seed=99)
     state, _ = env.reset()
 

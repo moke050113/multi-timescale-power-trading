@@ -41,6 +41,7 @@ NUM_FINAL_WORLDS = 10
 def _run_episode(env, coordinator, deterministic=False, store_and_update=True, world=None):
     """执行一个 episode, 返回 (cost, reward_m_sum, reward_s_sum, flex_saving)"""
     state, _ = env.reset(options=None if world is None else {"world": world})
+    coordinator.begin_episode()
     total_reward = 0.0
     r_m_sum = 0.0
     r_s_sum = 0.0

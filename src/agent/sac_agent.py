@@ -85,23 +85,24 @@ class GaussianPolicy(nn.Module):
 # ============================================================
 
 class ReplayBuffer:
-    """经验回放池"""
+    """经验回放池 (支持半 MDP 转移: 一条经验可跨多个环境步, 用 discount 传递 γ^Δt)"""
 
     def __init__(self, capacity: int = 1000000):
         self.buffer = deque(maxlen=capacity)
 
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+    def push(self, state, action, reward, next_state, done, discount: float = 1.0):
+        self.buffer.append((state, action, reward, next_state, done, discount))
 
     def sample(self, batch_size: int):
         batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
+        states, actions, rewards, next_states, dones, discounts = zip(*batch)
         return (
             np.array(states, dtype=np.float32),
             np.array(actions, dtype=np.float32),
             np.array(rewards, dtype=np.float32).reshape(-1, 1),
             np.array(next_states, dtype=np.float32),
             np.array(dones, dtype=np.float32).reshape(-1, 1),
+            np.array(discounts, dtype=np.float32).reshape(-1, 1),
         )
 
     def __len__(self):
@@ -187,9 +188,17 @@ class SACAgent:
                 action = action.cpu().numpy().flatten()
         return action * self.action_scale
 
-    def store_transition(self, state, action, reward, next_state, done):
-        """存储一条经验"""
-        self.replay_buffer.push(state, action, reward, next_state, done)
+    def store_transition(self, state, action, reward, next_state, done, discount=None):
+        """
+        存储一条经验。
+
+        discount: 跨 dt 个环境步的经验 (半 MDP 决策衔接) 传 gamma**dt;
+                  None = 单步经验, 取 gamma**1 (与原单步 TD 语义一致)。
+        """
+        self.replay_buffer.push(
+            state, action, reward, next_state, done,
+            self.gamma if discount is None else float(discount)
+        )
 
     def update(self) -> Dict[str, float]:
         """
@@ -202,7 +211,7 @@ class SACAgent:
             return {}
 
         # 采样
-        states, actions, rewards, next_states, dones = \
+        states, actions, rewards, next_states, dones, discounts = \
             self.replay_buffer.sample(self.batch_size)
 
         states = torch.FloatTensor(states).to(self.device)
@@ -210,6 +219,7 @@ class SACAgent:
         rewards = torch.FloatTensor(rewards).to(self.device)
         next_states = torch.FloatTensor(next_states).to(self.device)
         dones = torch.FloatTensor(dones).to(self.device)
+        discounts = torch.FloatTensor(discounts).to(self.device)
 
         # ---- 更新 Critic ----
         with torch.no_grad():
@@ -217,7 +227,7 @@ class SACAgent:
             next_actions = next_actions_raw * self.action_scale
             q1_next, q2_next = self.critic_target(next_states, next_actions)
             q_next = torch.min(q1_next, q2_next) - self.alpha * next_log_probs
-            q_target = rewards + (1 - dones) * self.gamma * q_next
+            q_target = rewards + (1 - dones) * discounts * q_next
 
         q1, q2 = self.critic(states, actions)
         critic_loss = F.mse_loss(q1, q_target) + F.mse_loss(q2, q_target)
@@ -258,7 +268,7 @@ class SACAgent:
         return metrics
 
     def save(self, path: str):
-        """保存模型"""
+        """保存模型 (含结构/超参指纹, 供加载时校验)"""
         torch.save({
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
@@ -267,18 +277,57 @@ class SACAgent:
             "actor_optim": self.actor_optim.state_dict(),
             "critic_optim": self.critic_optim.state_dict(),
             "alpha_optim": self.alpha_optim.state_dict(),
+            "action_scale": self.action_scale,
+            "target_entropy": self.target_entropy,
+            "gamma": self.gamma,
+            "tau": self.tau,
+            "fingerprint": self._fingerprint(),
         }, path)
 
+    def _fingerprint(self):
+        """网络形状指纹: 加载时用来确认权重确实属于这套结构。"""
+        def shapes(module):
+            return {k: tuple(v.shape) for k, v in module.state_dict().items()}
+        return {
+            "actor": shapes(self.actor),
+            "critic": shapes(self.critic),
+            "state_dim": self.actor.l1.in_features,
+            "action_dim": self.actor.mean_head.out_features,
+        }
+
     def load(self, path: str):
-        """加载模型"""
-        ckpt = torch.load(path, map_location=self.device)
+        """
+        加载模型。
+
+        关键点: log_alpha 必须**原地**写回同一个 tensor 对象, 否则温度优化器
+        (alpha_optim 绑定的是构造时那个参数) 会在加载后与参数脱钩,
+        续训时温度不再更新且无任何报错。
+        """
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        saved = ckpt.get("fingerprint")
+        if saved is not None and saved != self._fingerprint():
+            raise ValueError(
+                f"检查点结构与当前智能体不一致: state_dim {saved['state_dim']}->"
+                f"{self._fingerprint()['state_dim']}, "
+                f"action_dim {saved['action_dim']}->{self._fingerprint()['action_dim']}"
+            )
+        for key in ("action_scale", "target_entropy", "gamma", "tau"):
+            if key in ckpt and float(ckpt[key]) != float(getattr(self, key)):
+                raise ValueError(
+                    f"检查点 {key}={ckpt[key]} 与当前智能体 {getattr(self, key)} 不一致, "
+                    f"拒绝加载 (避免评价时用到不同尺度的动作)"
+                )
+
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
         self.critic_target.load_state_dict(ckpt["critic_target"])
-        self.log_alpha = torch.tensor(ckpt["log_alpha"], requires_grad=True, device=self.device)
-        self.alpha = self.log_alpha.exp().item()
         self.actor_optim.load_state_dict(ckpt["actor_optim"])
         self.critic_optim.load_state_dict(ckpt["critic_optim"])
+
+        with torch.no_grad():
+            self.log_alpha.copy_(torch.tensor(float(ckpt["log_alpha"]),
+                                              device=self.device, dtype=self.log_alpha.dtype))
+        self.alpha = self.log_alpha.exp().item()
         self.alpha_optim.load_state_dict(ckpt["alpha_optim"])
 
     def _soft_update(self, target, source):

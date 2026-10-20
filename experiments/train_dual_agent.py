@@ -36,6 +36,7 @@ def train_agent(scenario_name, use_dual_agent, max_episodes=1000, seed=42):
 
     for ep in range(1, max_episodes + 1):
         state, _ = env.reset()
+        coordinator.begin_episode()
         while True:
             stage_before = env.current_stage
             action = coordinator.select_action(state, stage_before)
