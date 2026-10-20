@@ -98,6 +98,8 @@ Qoder_project/
 │   ├── run_four_arm_benchmark.py    # 四臂配对世界基准 (唯一正式训练/评价入口)
 │   ├── run_all_scenarios.sh         # 逐场景长跑驱动 + 自动合并 (可中断续跑)
 │   ├── merge_four_arm_parts.py      # 合并逐场景分片 + 预算/覆盖校验
+│   ├── plot_four_arm_results.py     # 结果出图 (配对改进 / 学习臂vs规则臂 / γ_m 剖面)
+│   ├── report_tables.py             # 由合并 JSON 渲染报告 5.4 节表格
 │   ├── measure_reward_scale.py      # 单位奖励量级比与成本分层占比实测
 │   ├── md_to_pdf.py                 # 报告排版导出
 │   ├── test_settlement_accounting.py / test_environment_accounting.py
@@ -155,6 +157,13 @@ bash experiments/run_all_scenarios.sh
 ```
 
 `--scenarios` 取逗号分隔的场景首字母（如 `A,C`，默认全部 5 个），`--seeds` 同样是逗号分隔。
+
+```bash
+# 出图与 5.4 节表格：只读合并后的 JSON，不重新训练
+PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py --in results/four_arm_benchmark.json
+PYTHONIOENCODING=utf-8 python experiments/report_tables.py         --in results/four_arm_benchmark.json
+```
+
 迭代 1–7 的历史训练/绘图脚本已随作废口径一起删除，训练与评价统一通过上面的四臂基准入口进行。
 
 ## 📊 实验结果

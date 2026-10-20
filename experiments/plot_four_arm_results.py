@@ -52,33 +52,40 @@ def world_cost_table(by_key, scen, arm):
     return {k: float(np.mean(v)) for k, v in acc.items()}
 
 
+def _paired_diffs(by_key, scen, arm, ref):
+    """同种子同世界的配对改进 % 列表 (正 = arm 比 ref 省)。"""
+    diffs = []
+    for r in by_key.get((scen, ref), []):
+        c = next((x for x in by_key.get((scen, arm), []) if x["seed"] == r["seed"]), None)
+        if c is None:
+            continue
+        cand = {w["world"]: w["cost"] for w in c["worlds"]}
+        pair = [(w["cost"], cand[w["world"]]) for w in r["worlds"] if w["world"] in cand]
+        if not pair:
+            continue
+        bc = np.mean([p[0] for p in pair])
+        cc = np.mean([p[1] for p in pair])
+        diffs.append((bc - cc) / bc * 100)
+    return diffs
+
+
+def _bar_group(ax, x, by_key, scenarios, arms, ref, offset, width, hatch=None):
+    for i, arm in enumerate(arms):
+        means, errs = [], []
+        for scen in scenarios:
+            d = _paired_diffs(by_key, scen, arm, ref)
+            means.append(np.mean(d) if d else 0.0)
+            errs.append(np.std(d) / max(np.sqrt(len(d)), 1) if d else 0.0)
+        ax.bar(x + offset + i * width, means, width * 0.9, yerr=errs, capsize=3,
+               hatch=hatch, label=ARM_LABEL.get(arm, arm))
+
+
 def plot_improvement(by_key, scenarios, arms, baseline, outdir):
     others = [a for a in arms if a != baseline]
     x = np.arange(len(scenarios))
     width = 0.8 / max(len(others), 1)
     fig, ax = plt.subplots(figsize=(9, 5))
-    for i, arm in enumerate(others):
-        means, errs = [], []
-        for scen in scenarios:
-            base, cand = by_key.get((scen, baseline), []), by_key.get((scen, arm), [])
-            diffs = []
-            for b, c in zip(sorted(base, key=lambda r: r["seed"]),
-                            sorted(cand, key=lambda r: r["seed"])):
-                pair = [(bw["cost"], cw["cost"]) for bw, cw in zip(b["worlds"], c["worlds"])
-                        if bw["world"] == cw["world"]]
-                if not pair:
-                    continue
-                bc = np.mean([p[0] for p in pair])
-                cc = np.mean([p[1] for p in pair])
-                diffs.append((bc - cc) / bc * 100)
-            if diffs:
-                means.append(np.mean(diffs))
-                errs.append(np.std(diffs) / max(np.sqrt(len(diffs)), 1))
-            else:
-                means.append(0.0)
-                errs.append(0.0)
-        ax.bar(x + i * width - 0.4 + width / 2, means, width * 0.9,
-               yerr=errs, capsize=3, label=ARM_LABEL.get(arm, arm))
+    _bar_group(ax, x, by_key, scenarios, others, baseline, -0.4 + width / 2, width)
     ax.axhline(0, color="k", lw=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels([s[:1] for s in scenarios])
@@ -89,6 +96,29 @@ def plot_improvement(by_key, scenarios, arms, baseline, outdir):
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "four_arm_improvement.png"), dpi=150)
     plt.close(fig)
+
+
+def plot_vs_strong_rule(by_key, scenarios, arms, strong, outdir):
+    """学习臂相对最强规则臂的增量 —— 赢弱基线不算证据, 这张图才是门槛。"""
+    rule_arms = {"fixed_rule", "rolling_rule", strong}
+    learners = [a for a in arms if a not in rule_arms]
+    if not learners:
+        return False
+    x = np.arange(len(scenarios))
+    width = 0.8 / len(learners)
+    fig, ax = plt.subplots(figsize=(9, 5))
+    _bar_group(ax, x, by_key, scenarios, learners, strong, -0.4 + width / 2, width)
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([s[:1] for s in scenarios])
+    ax.set_xlabel("价格场景")
+    ax.set_ylabel(f"配对改进 % (相对 {ARM_LABEL[strong]})")
+    ax.set_title("学习臂 vs 非学习规则臂: 只有本图为正才说明学习带来增量")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, "four_arm_vs_strong_rule.png"), dpi=150)
+    plt.close(fig)
+    return True
 
 
 def plot_paired_worlds(by_key, scenarios, arms, baseline, outdir):
@@ -184,17 +214,22 @@ if __name__ == "__main__":
     parser.add_argument("--in", dest="infile", type=str,
                         default="results/four_arm_benchmark.json")
     parser.add_argument("--outdir", type=str, default="results")
+    parser.add_argument("--strong", type=str, default="rolling_rule",
+                        help="最强非学习臂, 用于'学习是否带来增量'一图; none=不出该图")
     args = parser.parse_args()
 
     data = load(args.infile)
     baseline = data["meta"].get("baseline_arm", "fixed_rule")
     by_key, scenarios, arms = index_runs(data)
+    strong = args.strong if args.strong != "none" and args.strong in arms else None
     os.makedirs(args.outdir, exist_ok=True)
-    print(f"场景 {len(scenarios)} 个, 臂 {arms}, 基线 {baseline}")
+    print(f"场景 {len(scenarios)} 个, 臂 {arms}, 基线 {baseline}, 强参照 {strong}")
     plot_improvement(by_key, scenarios, arms, baseline, args.outdir)
+    has_vs_strong = bool(strong) and plot_vs_strong_rule(
+        by_key, scenarios, arms, strong, args.outdir)
     plot_paired_worlds(by_key, scenarios, arms, baseline, args.outdir)
     plot_breakdown(by_key, scenarios, arms, args.outdir)
     plot_gamma_profile(by_key, scenarios, arms, args.outdir)
-    print("输出:", ", ".join(f"{n}.png" for n in
-                             ["four_arm_improvement", "four_arm_paired_worlds",
-                              "four_arm_cost_breakdown", "four_arm_gamma_profile"]))
+    names = ["four_arm_improvement"] + (["four_arm_vs_strong_rule"] if has_vs_strong else []) + \
+        ["four_arm_paired_worlds", "four_arm_cost_breakdown", "four_arm_gamma_profile"]
+    print("输出:", ", ".join(f"{n}.png" for n in names))

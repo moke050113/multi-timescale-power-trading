@@ -48,42 +48,64 @@ def layer_share(by_key, scen, arm):
     return float(np.mean(mid)) * 100, float(np.mean(spot)) * 100
 
 
-def render(data):
+def render(data, strong=None):
     baseline = data["meta"].get("baseline_arm", "fixed_rule")
     by_key, scenarios, arms = index_runs(data)
     arms = [a for a in arms if a != baseline]
+    # 强参照臂: DRL 必须同时压过规则臂, 只赢弱基线不构成证据
+    strong = strong if strong and strong != baseline and strong in arms else None
     seeds = sorted(data["meta"]["seeds"])
     lines = []
 
-    lines.append(f"### 表 5.4-1 年均成本与配对改进 (基线 = {ARM_LABEL.get(baseline, baseline)})\n")
+    head = f"### 表 5.4-1 年均成本与配对改进 (基线 = {ARM_LABEL.get(baseline, baseline)})\n"
+    if strong and any(a != strong for a in arms):
+        head += (f"\n*改进列同时给出相对弱基线与相对 **{ARM_LABEL[strong]}** 的差值; "
+                 "只有后者为正才说明学习真的胜过规则。*\n")
+    lines.append(head)
+    cols = [ARM_LABEL[a] for a in arms]
     lines.append("| 价格场景 | 基线成本 (元) | " + " | ".join(
-        f"{ARM_LABEL[a]} 成本 (元) / 改进" for a in arms) + " |")
+        f"{c} 成本 (元) / vs基线"
+        + (" / vs强规则" if strong and a != strong else "") for c, a in zip(cols, arms)) + " |")
     lines.append("|---|" + "---|" * (len(arms) + 1))
     for scen in scenarios:
         base_runs = by_key.get((scen, baseline), [])
         costs = [r["mean_cost"] for r in base_runs]
         cells = [f"{np.mean(costs):,.0f} ±{np.std(costs):,.0f}"]
         for arm in arms:
-            ps = seed_pairwise(by_key, scen, arm, baseline)
-            if not ps:
+            runs = by_key.get((scen, arm), [])
+            if not runs:
                 cells.append("—")
                 continue
-            runs = by_key.get((scen, arm), [])
-            pct = float(np.mean([p[1] for p in ps]))
-            cells.append(f"{np.mean([r['mean_cost'] for r in runs]):,.0f} "
-                         f"±{np.std([r['mean_cost'] for r in runs]):,.0f} / "
-                         f"{pct:+.2f}%")
+            cell = (f"{np.mean([r['mean_cost'] for r in runs]):,.0f} "
+                    f"±{np.std([r['mean_cost'] for r in runs]):,.0f}")
+            ps = seed_pairwise(by_key, scen, arm, baseline)
+            cell += f" / {np.mean([p[1] for p in ps]):+.2f}%" if ps else " / —"
+            if strong and arm != strong:
+                qs = seed_pairwise(by_key, scen, arm, strong)
+                cell += f" / {np.mean([p[1] for p in qs]):+.2f}%" if qs else " / —"
+            cells.append(cell)
         lines.append(f"| {scen} | " + " | ".join(cells) + " |")
 
     lines.append("\n### 表 5.4-2 逐种子稳健性 (配对改进 % · 更省世界数)\n")
-    lines.append("| 价格场景 | " + " | ".join(ARM_LABEL[a] for a in arms) + " |")
+    lines.append("| 价格场景 | " + " | ".join(
+        ARM_LABEL[a] + ("" if a == strong else " (vs 基线" + (", vs 强规则)" if strong else ")"))
+        for a in arms) + " |")
     lines.append("|---|" + "---|" * len(arms))
     for scen in scenarios:
         cells = []
         for arm in arms:
             ps = seed_pairwise(by_key, scen, arm, baseline)
-            cells.append("<br>".join(f"seed{s}: {p:+.2f}% ({w}/{t})"
-                                     for s, p, w, t in ps) or "—")
+            qs = seed_pairwise(by_key, scen, arm, strong) if strong and arm != strong else []
+            if not ps:
+                cells.append("—")
+                continue
+            rows = []
+            for i, (s, p, w, t) in enumerate(ps):
+                row = f"seed{s}: {p:+.2f}% ({w}/{t})"
+                if qs and i < len(qs):
+                    row += f" / {qs[i][1]:+.2f}% ({qs[i][2]}/{qs[i][3]})"
+                rows.append(row)
+            cells.append("<br>".join(rows))
         lines.append(f"| {scen} | " + " | ".join(cells) + " |")
 
     lines.append("\n### 表 5.4-3 成本分层占比 (中长期三层 / 现货, 按世界均值)\n")
@@ -97,10 +119,11 @@ def render(data):
             cells.append(f"{share[0]:.1f}% / {share[1]:.1f}%" if share else "—")
         lines.append(f"| {scen} | " + " | ".join(cells) + " |")
 
-    lines.append("\n### 表 5.4-4 决策口径与验收 (3 种子 × 10 世界合并)\n")
+    total_worlds = data["meta"]["eval_worlds"]
+    lines.append("\n### 表 5.4-4 决策口径与验收 "
+                 f"({len(data['meta']['seeds'])} 种子 × {total_worlds} 世界合并)\n")
     lines.append("| 价格场景 | 臂 | 通过世界 | γ 均值 | \\|强度\\| 均值 |")
     lines.append("|---|---|---|---|---|")
-    total_worlds = data["meta"]["eval_worlds"]
     for scen in scenarios:
         for arm in [baseline] + arms:
             runs = by_key.get((scen, arm), [])
@@ -130,5 +153,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="渲染报告 5.4 节表格")
     parser.add_argument("--in", dest="infile", type=str,
                         default="results/four_arm_benchmark.json")
+    parser.add_argument("--strong", type=str, default="rolling_rule",
+                        help="强参照臂 (与基线一起给出配对改进); none 表示只看基线")
     args = parser.parse_args()
-    print(render(load(args.infile)))
+    print(render(load(args.infile), strong=None if args.strong == "none" else args.strong))
