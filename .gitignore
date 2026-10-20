@@ -37,6 +37,8 @@ results/*.json
 results/parts/
 # 合并后的四臂基准结果随仓库发布: 图表与 5.4 表格可由它复现, 无需重训
 !results/four_arm_benchmark.json
+# 消融只发布配对汇总 (逐世界原始分片仍在 results/parts/, 体积大且可由开关重跑)
+!results/ablation_summary.json
 .trash_void/
 
 # IDE
