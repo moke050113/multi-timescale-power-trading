@@ -707,6 +707,7 @@ B 方案成功。**双 DRL 智能体取代分层架构成为主方案**，既满
 | train.py | 训练主循环 (旧分层入口, 已被四臂基准取代) | 第三组 |
 | flexible_dispatcher.py | 旧规则调度器 (只给功率包络, 历史脚本使用) | 第二组 |
 | run_four_arm_benchmark.py | 四臂配对世界基准 (冻结预算/种子, 逐回合会计复核) | 公共 |
+| measure_reward_scale.py | 逐回合单位奖励量级测量 (报告"信号同量级"结论的数据来源) | 第三组 |
 | md_to_pdf.py | 课程设计报告 PDF 导出 | 公共 |
 | test_modules.py | 模块验证 | 公共 |
 | test_settlement_accounting.py / test_environment_accounting.py / test_flexible_executor.py / test_information_boundary.py / test_agent_timing.py / test_four_arm_benchmark.py | 会计、执行闭环、信息边界、时序重载与四臂框架验收 (43 用例) | 公共 |
