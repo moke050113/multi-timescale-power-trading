@@ -150,7 +150,7 @@ def plot_paired_worlds(by_key, scenarios, arms, baseline, outdir):
             ax.legend(fontsize=7)
     fig.suptitle("逐世界配对 (点落在对角线下方 = 同一世界更省)")
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "four_arm_paired_worlds.png"), dpi=150)
+    fig.savefig(os.path.join(outdir, "four_arm_paired_worlds.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -205,7 +205,7 @@ def plot_gamma_profile(by_key, scenarios, arms, outdir):
             ax.legend(fontsize=7)
     fig.suptitle("逐交割月覆盖率 (跨月下降合法: 各月独立签约, 不退款)")
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "four_arm_gamma_profile.png"), dpi=150)
+    fig.savefig(os.path.join(outdir, "four_arm_gamma_profile.png"), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
