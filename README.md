@@ -123,6 +123,8 @@ conda activate power_trading
 
 # 安装依赖
 pip install torch numpy gymnasium matplotlib
+# 仅导出报告 PDF 时额外需要
+pip install pymupdf markdown
 ```
 
 ### 模块测试

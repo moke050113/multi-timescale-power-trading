@@ -4,6 +4,9 @@
 # 核心依赖
 torch>=2.14.0
 numpy>=2.4.0
-pandas>=3.0.0
 gymnasium>=1.4.0
 matplotlib>=3.11.0
+
+# 仅报告导出需要 (experiments/md_to_pdf.py)
+pymupdf>=2.0
+markdown>=3.10
