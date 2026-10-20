@@ -196,10 +196,11 @@ PYTHONIOENCODING=utf-8 python experiments/report_tables.py         --in results/
 ### 尚未达成（重训进行中）
 
 **分层 SAC 与双 SAC 的性能结论尚未产生。** 迭代 7 及之前报告的全部成本绝对值与改进百分比
-（+48.7% / +24.0% / +23.1% / +38.3%、"约 28 万元/年"等）建立在同一 MWh 被重复计费的
-结算缺陷之上，**已整体作废**，只作为开发过程的历史记录保留在 [progress.md](progress.md)
-与 [项目完成度评估报告.md](项目完成度评估报告.md) 的作废表格中。
-正式数字待 `results/four_arm_benchmark.json` 生成后再重建图表与结论。
+建立在同一 MWh 被重复计费的结算缺陷之上，**已整体作废并从各文档中删除**；
+作废理由与修复过程写在 [progress.md](progress.md) 与 [项目完成度评估报告.md](项目完成度评估报告.md)
+的撤回声明里，原始数值只能从 git 历史（提交 `f2b4f7c` 及之前）取回，且不得作为结论引用。
+正式数字待 `results/four_arm_benchmark.json` 生成后由 `plot_four_arm_results.py` /
+`report_tables.py` 重建图表与 5.4 节表格。
 
 ## 🔬 核心算法
 
