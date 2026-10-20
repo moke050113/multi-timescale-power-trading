@@ -1,10 +1,22 @@
 """
-多时间尺度电力交易 Gym 环境 (v3.5 — 设备执行闭环 + 偏差结算)
+多时间尺度电力交易 Gym 环境 (v3.6 — 设备执行闭环 + 偏差结算 + 信息发布游标)
 
 架构:
     中长期智能体 (SAC): 输出 ratio_raw → α/β_m/γ_m, 负责年度/月度/月内 3 个阶段
     柔性调度智能体 (SAC): 输出 flexible_action ∈ [-1,1] → 本月柔性强度, 负责现货阶段
         (它只决定"多大程度择优调度", 逐时段落点由执行层按已公布日前价与设备物理约束决定)
+
+改进 (v3.6): 信息边界
+    - 观察改为只读取"当前决策时点已公布"的量 (发布游标 _publish_for_next_decision):
+      年度报价签约时公布; 某月月度/月内报价从该月对应决策时点起可见;
+      某月日前现货剖面只在该月现货决策时点可见, 交割后进入公开历史。
+      价格槽位语义 = "该市场最近一次已公布的报价", 0 表示该市场尚未开市过。
+    - 中长期阶段的现货水平/波幅 = 已交割月份日前价的滚动统计 (首月无历史时退回公开
+      年度合同价、波幅取 0), 不再暴露"本月现货实际均值/标准差"。
+    - 未来暴露成本塑形改用同一公开预测, 删除 price_gen.params["spot_mean"]
+      (生成器的隐含分布参数不属于可观察信息)。
+    - 验收: experiments/test_information_boundary.py (6 例, 含"篡改未来 11 个月价格后
+      首月 4 个决策的观察与奖励逐位不变"、"隐参污染成 1e6 结果不变")。
 
 改进 (v3.5):
     - 现货阶段闭环: 合法观察 → 动作 → 设备实际执行 (EV SOC 积分 / 工业日任务守恒)
@@ -17,12 +29,12 @@
       保证全年合同电量恒等于 Q (修复 3.25× 双重计量)
     - 奖励按各步决策电量基准归一化 (年度步 Q, 其余 R_m), 单位元/MWh
 
-状态空间 (13 维):
+状态空间 (13 维, 全部为发布游标内的量):
     [α, β, γ,                                    # 仓位 (3)
-     annual_p, monthly_p, intraday_p,             # 价格 (3)
-     spot_mean, spot_std,                         # 现货统计 (2)
+     annual_p, monthly_p, intraday_p,             # 已公布报价, 0 表示该市场尚未开市 (3)
+     spot_level, spot_spread,                     # 已交割月份日前价的滚动统计 / 本月已公布日前价 (2)
      month_sin, month_cos,                        # 时间编码 (2)
-     remaining,                                   # 现货暴露 (1)
+     remaining,                                   # 现货暴露 1-γ (1)
      ev_capacity, ind_capacity]                   # 柔性可调容量 (2)
 """
 import numpy as np
@@ -46,7 +58,7 @@ def sigmoid(x):
 
 
 class TradingEnvironment(gym.Env):
-    """多时间尺度电力交易环境 v3.5 (双 SAC + 设备执行闭环)"""
+    """多时间尺度电力交易环境 v3.6 (双 SAC + 设备执行闭环 + 信息发布游标)"""
 
     metadata = {"render_modes": []}
 
@@ -120,6 +132,13 @@ class TradingEnvironment(gym.Env):
 
         # 状态变量
         self.prices = None
+        # 信息发布游标: 观察层只允许读取这些"当前决策时点已公布"的快照值,
+        # 而不是直接索引 self.prices (后者含未来实现值, 会造成完美预见)。
+        self.pub_annual = 0.0        # 年度合同报价 (签约决策时点公布)
+        self.pub_monthly = 0.0       # 最近开市月份的月度报价; 0 = 该市场尚未开市
+        self.pub_intraday = 0.0      # 最近开市月份的月内报价; 0 = 尚未开市
+        self.pub_spot_day = None     # 本月已公布的日前现货剖面 (仅现货决策时点非空)
+        self.spot_history = []       # 已交割月份的日前价 (日均价, 日峰谷差) - 公开历史
         self.current_step = 0
         self.current_month = 0
         self.current_stage = self.STAGE_ANNUAL
@@ -160,6 +179,12 @@ class TradingEnvironment(gym.Env):
         self.world_cursor += 1
         self.settlement.reset()
 
+        self.pub_annual = 0.0
+        self.pub_monthly = 0.0
+        self.pub_intraday = 0.0
+        self.pub_spot_day = None
+        self.spot_history = []
+
         self.current_step = 0
         self.current_month = 0
         self.current_stage = self.STAGE_ANNUAL
@@ -172,6 +197,7 @@ class TradingEnvironment(gym.Env):
         self.total_flexible_penalty = 0.0
         self.flexible_cost_saving = 0.0
         self.device_checks = []
+        self._publish_for_next_decision()
 
         return self._get_obs(), self._get_info()
 
@@ -259,6 +285,10 @@ class TradingEnvironment(gym.Env):
             self.flexible_cost_saving += saving
             self.device_checks.append(self._device_check(executed, self.current_month))
 
+            # 本月交割完毕, 其日前价成为公开历史 (供后续月份的现货水平/波幅预测使用)
+            self.spot_history.append((float(spot_prices.mean()),
+                                      float(spot_prices.max() - spot_prices.min())))
+
             self.current_month += 1
             if self.current_month < self.num_months:
                 self.current_stage = self.STAGE_MONTHLY
@@ -295,9 +325,10 @@ class TradingEnvironment(gym.Env):
             # 关键奖励塑形: 中长期智能体的 γ 决策会导致本月剩余电量流入现货市场,
             # 若不感知该成本, 智能体没有保持高覆盖率的动力 (credit assignment 反向问题)
             if executed_stage == "intraday" and self.exposure_shaping:
-                # 使用场景的现货均价作为"未来成本预估", 避免完美预见具体月价格
-                expected_spot = self.price_gen.params["spot_mean"]
-                reward_midlong -= (1.0 - self.gamma) * expected_spot
+                # 用"发布信息"预测未来现货水平: 已交割月份日前价的滚动均值
+                # (不再读取 price_gen.params, 那是生成器隐含分布参数 = 完美预见)
+                forecast_level, _ = self._spot_forecast()
+                reward_midlong -= (1.0 - self.gamma) * forecast_level
             reward_spot = 0.0
             reward_global = reward_midlong
 
@@ -310,6 +341,9 @@ class TradingEnvironment(gym.Env):
 
         terminated = self.current_month >= self.num_months
         truncated = False
+
+        # 推进发布游标: 返回的观察必须是"下一个决策时点已公布"的信息
+        self._publish_for_next_decision()
 
         final_info = self._get_info()
         final_info.update(info)
@@ -365,13 +399,62 @@ class TradingEnvironment(gym.Env):
         }
 
     # ------------------------------------------------------------
-    def _get_obs(self) -> np.ndarray:
+    # 信息发布游标 (决定观察里能看到什么)
+    # ------------------------------------------------------------
+    def _publish_for_next_decision(self):
+        """
+        把"到当前决策阶段为止"公开可得的价格写进发布快照。
+
+        公布时点 (幂等, 可在每次 reset / step 末尾调用):
+            年度决策: 仅年度报价
+            月度决策 (月 m): + 月 m 的月度报价
+            月内决策 (月 m): + 月 m 的月内报价
+            现货决策 (月 m): + 月 m 的日前现货剖面 (调度前一日公布)
+            交割之后:        该剖面进入 spot_history, 供后续月份做滚动预测
+        尚未开市的市场在观察中记为 0。
+        """
+        self.pub_annual = float(self.prices["annual_price"])
+        stage = self.current_stage
+        # 本月日前剖面只在现货决策时点可见; 过了该时点它只能以"已交割历史"的形式被引用
+        self.pub_spot_day = None
+        if stage == self.STAGE_ANNUAL:
+            self.pub_monthly = 0.0
+            self.pub_intraday = 0.0
+            return
+
         month = min(self.current_month, self.num_months - 1)
-        annual_p = self.prices["annual_price"] if self.prices else 0
-        monthly_p = self.prices["monthly_prices"][month] if self.prices else 0
-        intraday_p = self.prices["intraday_prices"][month] if self.prices else 0
-        spot_mean = self.prices["spot_prices"][month].mean() if self.prices else 0
-        spot_std = self.prices["spot_prices"][month].std() if self.prices else 0
+        self.pub_monthly = float(self.prices["monthly_prices"][month])
+        if stage >= self.STAGE_INTRADAY:
+            self.pub_intraday = float(self.prices["intraday_prices"][month])
+        if stage >= self.STAGE_SPOT:
+            self.pub_spot_day = np.asarray(self.prices["spot_prices"][month],
+                                           dtype=float).copy()
+
+    def _spot_forecast(self) -> Tuple[float, float]:
+        """
+        当前决策时点可得的现货水平与波幅 (元/MWh)。
+
+        - 现货阶段: 本月已公布的日前剖面均值与峰谷差 (调度前已知, 合法)
+        - 中长期阶段: 已交割月份日前价的滚动均值/均值峰谷差; 首月无历史时
+          退回公开年度合同价、波幅 0 (不看任何未来实现值)
+        """
+        if self.pub_spot_day is not None:
+            return float(self.pub_spot_day.mean()), float(
+                self.pub_spot_day.max() - self.pub_spot_day.min())
+        if self.spot_history:
+            levels = [h[0] for h in self.spot_history]
+            spreads = [h[1] for h in self.spot_history]
+            return float(np.mean(levels)), float(np.mean(spreads))
+        return float(self.pub_annual), 0.0
+
+    # ------------------------------------------------------------
+    def _get_obs(self) -> np.ndarray:
+        """观察只读发布快照 (pub_*/spot_history), 不直接读 self.prices。"""
+        month = min(self.current_month, self.num_months - 1)
+        annual_p = self.pub_annual
+        monthly_p = self.pub_monthly
+        intraday_p = self.pub_intraday
+        spot_level, spot_spread = self._spot_forecast()
 
         month_norm = month / self.num_months
         month_sin = np.sin(2 * np.pi * month_norm)
@@ -388,7 +471,7 @@ class TradingEnvironment(gym.Env):
         obs = np.array([
             self.alpha, self.beta, self.gamma,
             annual_p / 1000.0, monthly_p / 1000.0, intraday_p / 1000.0,
-            spot_mean / 1000.0, spot_std / 1000.0,
+            spot_level / 1000.0, spot_spread / 1000.0,
             month_sin, month_cos,
             remaining,
             ev_cap / self.total_demand,
@@ -406,6 +489,9 @@ class TradingEnvironment(gym.Env):
             "month": self.current_month,
             "world": self.current_world,
             "stage": self.current_stage,
+            # 本次返回的观察所属的决策阶段/月份 (发布游标以此为准, 供信息边界审计)
+            "obs_stage": int(self.current_stage),
+            "obs_month": int(min(self.current_month, self.num_months - 1)),
             "positions": self.settlement.get_positions(),
             "cost_breakdown": self.settlement.get_cost_breakdown(),
             "total_cost": total_cost_including_penalty,
@@ -417,6 +503,14 @@ class TradingEnvironment(gym.Env):
             "device_checks": self.device_checks,
             "device_task_met": bool(all(c["task_met"] for c in self.device_checks)),
             "demand_scale": self.demand_scale,
+            # 发布快照: 便于审计"某步观察里到底公布了哪些价格"
+            "published": {
+                "annual": self.pub_annual,
+                "monthly": self.pub_monthly,
+                "intraday": self.pub_intraday,
+                "spot_day_published": self.pub_spot_day is not None,
+                "delivered_months": len(self.spot_history),
+            },
         }
 
     def get_total_cost(self) -> float:
