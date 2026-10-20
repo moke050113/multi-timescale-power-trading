@@ -104,6 +104,7 @@ Qoder_project/
 │   ├── merge_four_arm_parts.py      # 合并逐场景分片 + 预算/覆盖校验
 │   ├── plot_four_arm_results.py     # 结果出图 (配对改进 / 学习臂vs规则臂 / γ_m 剖面)
 │   ├── report_tables.py             # 由合并 JSON 渲染报告 5.4 节表格
+│   ├── verify_report_numbers.py     # 报告正文数字审计 (表格逐字符比对 + 会计不变量 + 97 项主张)
 │   ├── measure_reward_scale.py      # 单位奖励量级比与成本分层占比实测
 │   ├── md_to_pdf.py                 # 报告排版导出
 │   ├── test_settlement_accounting.py / test_environment_accounting.py
@@ -172,6 +173,9 @@ bash experiments/run_all_scenarios.sh
 # 出图与 5.4 节表格：只读合并后的 JSON，不重新训练
 PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py --in results/four_arm_benchmark.json
 PYTHONIOENCODING=utf-8 python experiments/report_tables.py         --in results/four_arm_benchmark.json
+
+# 正文数字审计：改动报告任何 5.x 数值后必跑（不符即非零退出码）
+PYTHONIOENCODING=utf-8 python experiments/verify_report_numbers.py
 ```
 
 迭代 1–7 的历史训练/绘图脚本已随作废口径一起删除，训练与评价统一通过上面的四臂基准入口进行。
@@ -318,7 +322,11 @@ PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py \
 - 迭代8.8：四臂基准按冻结预算跑完（5 场景 × 4 臂 × 3 种子 × 2000 回合，600 个评估世界验收零失败），
   报告 5.4/5.7、README 与完成度评估改用实测的**负面**结论（双 DRL 相对滚动规则 −0.09%），
   图表入 `report/figures/`、合并结果 JSON 入库
-- 迭代8.9：按新会计与信息边界重跑消融（暴露塑形 / 现货奖励放大 / 三阶段交替训练三个开关）
+- 迭代8.9：报告正文数字改为可重复审计——`experiments/verify_report_numbers.py` 把表 5.4-1~4 与
+  `report_tables.py` 输出逐字符比对、复核 600 个世界的会计不变量与 5.3/5.4/5.7 正文的 97 项主张，
+  并用 4 处"故意改错"的变异确认检查器真的会失败；顺带修掉抽查发现的 9 处口径/归属错误
+- 迭代8.10：按新会计与信息边界重跑消融（暴露塑形 / 现货奖励放大 / 三阶段交替训练三个开关），
+  结果写入报告 5.9
 
 ## 🎓 课程信息
 
