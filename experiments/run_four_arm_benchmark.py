@@ -207,10 +207,12 @@ def check_failed(checks: dict) -> list:
 # ============================================================
 # 训练
 # ============================================================
-def train_sac_arm(env, arm, episodes, log_interval=200, dual=True):
+def train_sac_arm(env, arm, episodes, log_interval=200, dual=True, alternating=True):
     """SAC 臂按冻结相位训练; 返回相位记录 (供 meta 复现)。"""
     history = []
-    if dual:
+    if dual and not alternating:
+        phases = [("P-joint", 0, episodes, False, False)]     # 消融: 两个网络全程联合
+    elif dual:
         bounds = [int(episodes * PHASE_SPLIT[0]), int(episodes * (PHASE_SPLIT[0] + PHASE_SPLIT[1]))]
         phases = [("P1-midlong", 0, bounds[0], False, True),
                   ("P2-spot", bounds[0], bounds[1], True, False),
@@ -235,9 +237,10 @@ def train_sac_arm(env, arm, episodes, log_interval=200, dual=True):
 # 单臂单场景单种子
 # ============================================================
 def run_one(scenario, arm_name, seed, episodes, eval_worlds, load_scenario,
-            model_dir, do_train=True):
+            model_dir, do_train=True, env_kwargs=None, alternating=True):
     env = TradingEnvironment(scenario_name=scenario, load_scenario=load_scenario,
-                             use_rule_dispatcher=False, seed=seed)
+                             use_rule_dispatcher=False, seed=seed,
+                             **(env_kwargs or {}))
     obs, _ = env.reset()
     arm = make_arm(arm_name, state_dim=env.observation_space.shape[0], seed=seed)
 
@@ -245,7 +248,8 @@ def run_one(scenario, arm_name, seed, episodes, eval_worlds, load_scenario,
     phase_history = []
     if trainable and do_train:
         t0 = time.time()
-        phase_history = train_sac_arm(env, arm, episodes, dual=(arm_name == "dual_sac"))
+        phase_history = train_sac_arm(env, arm, episodes, dual=(arm_name == "dual_sac"),
+                                      alternating=alternating)
         logger.info(f"  训练耗时 {time.time()-t0:.0f}s | {scenario[:2]}/{arm_name}/seed{seed}")
         os.makedirs(model_dir, exist_ok=True)
         arm.coord.save(os.path.join(model_dir, f"{scenario[:1]}_{arm_name}_seed{seed}"))
@@ -341,6 +345,12 @@ def main():
     parser.add_argument("--no-train", action="store_true", help="只跑两个规则臂")
     parser.add_argument("--out", type=str, default="results/four_arm_benchmark.json")
     parser.add_argument("--model-subdir", type=str, default="four_arm")
+    parser.add_argument("--no-exposure-shaping", action="store_true",
+                        help="消融: 关闭中长期暴露成本塑形")
+    parser.add_argument("--no-spot-reward-scale", action="store_true",
+                        help="消融: 现货奖励不按暴露电量归一化")
+    parser.add_argument("--no-alternating", action="store_true",
+                        help="消融: 双 SAC 取消三阶段交替, 全程联合训练")
     args = parser.parse_args()
 
     if args.smoke:
@@ -359,6 +369,13 @@ def main():
     if args.no_train:
         arms = [a for a in arms if a in ("fixed_rule", "rolling_rule")]
     model_dir = os.path.join("results", "models", args.model_subdir)
+    env_kwargs = {"exposure_shaping": not args.no_exposure_shaping,
+                  "scale_spot_reward": not args.no_spot_reward_scale}
+    ablation = {"exposure_shaping": env_kwargs["exposure_shaping"],
+                "scale_spot_reward": env_kwargs["scale_spot_reward"],
+                "alternating": not args.no_alternating}
+    if not all(ablation.values()):
+        logger.info(f"消融开关 (相对完整方法关闭): {[k for k, v in ablation.items() if not v]}")
 
     logger.info(f"四臂基准 | 场景 {len(scenarios)} | 臂 {arms} | 种子 {seeds} "
                 f"| episodes={episodes} | eval_worlds={eval_worlds}")
@@ -368,7 +385,8 @@ def main():
         for seed in seeds:
             for arm_name in arms:
                 run, fails = run_one(scenario, arm_name, seed, episodes, eval_worlds,
-                                     args.load, model_dir, do_train=not args.no_train)
+                                     args.load, model_dir, do_train=not args.no_train,
+                                     env_kwargs=env_kwargs, alternating=ablation["alternating"])
                 runs.append(run)
                 failures.extend(fails)
                 if run["mean_cost"] is None:
@@ -391,6 +409,7 @@ def main():
             "load_scenario": args.load, "episodes_per_sac_arm": episodes,
             "eval_worlds": eval_worlds, "phase_split": PHASE_SPLIT,
             "baseline_arm": BASELINE, "smoke": bool(args.smoke),
+            "ablation": ablation,
             "note": "改进% 为同种子、同世界、同设备任务下相对 fixed_rule 臂的配对差异; "
                     "会计验收未通过的回合不进入汇总, 记录在 failures",
         },
