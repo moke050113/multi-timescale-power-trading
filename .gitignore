@@ -34,7 +34,9 @@ ENV/
 results/models/
 results/*.png
 results/*.json
-results/parts/
+# 逐场景/逐变体分片随仓库发布 (审计 N04): 报告里的配对差与消融结论要能在不重训的前提下被复算
+results/parts/*
+!results/parts/*.json
 # 合并后的四臂基准结果随仓库发布: 图表与 5.4 表格可由它复现, 无需重训
 !results/four_arm_benchmark.json
 # 消融只发布配对汇总 (逐世界原始分片仍在 results/parts/, 体积大且可由开关重跑)

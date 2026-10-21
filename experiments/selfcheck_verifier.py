@@ -1,10 +1,11 @@
-"""审计器的反向用例: 故意把文档改错, 确认 `verify_report_numbers.py` 会拒绝。
+"""审计器的反向用例: 故意把文档或数据改错, 确认 `verify_report_numbers.py` 会拒绝。
 
 审计"0 项不符"只有在这个检查器**能**抓到错数时才有意义, 所以每条变异都是一次反向用例:
-把正文里某个数改掉 (或删掉一行), 检查器必须返回非零并指出是哪一项。
+把正文里某个数改掉 (或删掉一行), 检查器必须返回非零并指出是哪一项;
+把落盘 JSON 里的惩罚口径/设备结论/世界编号/源锁改掉, 同样必须被拒。
 任何一条被漏掉, 就说明对应的检查是空转的 —— 那正是本项目在旧口径上吃过亏的地方。
 
-变异同时打到报告与 README (后者复述了 5.9 的消融数字, 跨文档一致性也要能被抓住)。
+变异同时打到报告、README (后者复述了 5.9 的消融数字) 与 results/four_arm_benchmark.json。
 
 用法:
     python experiments/selfcheck_verifier.py
@@ -12,7 +13,9 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
+import json
 import os
 import re
 import sys
@@ -20,12 +23,18 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import experiments.verify_report_numbers as V                                  # noqa: E402
+from src.utils.config import INDUSTRIAL_LOAD_PARAMS                            # noqa: E402
 
 FILES = {"报告": "report/课程设计报告.md", "README": "README.md"}
+DATA = "results/four_arm_benchmark.json"
 
 
 def drop_line(text: str, pat: str) -> str:
     return "\n".join(l for l in text.splitlines() if not l.startswith(pat))
+
+
+def worlds(payload: dict) -> list:
+    return [w for r in payload["runs"] for w in r["worlds"]]
 
 
 # (标签, 打到哪份文档, 变异) —— 变异必须真的动到字符, 否则这条用例是空转的
@@ -52,12 +61,70 @@ MUTATIONS = [
 ]
 
 
-def run(texts: dict, paths: dict) -> tuple:
-    """把 (可能变异的) 两份文档写到临时文件, 用审计器的真实入口跑一遍。"""
+# 数据侧变异 (审计 N07): 落盘 JSON 被改动时, 鉴真检查必须拒绝, 而不是只信文件里的数
+def _penalty_back_to_day_scale(payload):
+    """迭代 8.11 前的错法: 惩罚按单个代表日计, 电量却按整月结算。"""
+    for w in worlds(payload):
+        w["flexible_penalty"] = w["transferred_mwh_day"] * INDUSTRIAL_LOAD_PARAMS["transfer_cost"]
+    return payload
+
+
+def _energy_back_to_day_scale(payload):
+    """转移电量按代表日落档: 单价与惩罚仍自洽, 只有尺度因子检查能抓到。"""
+    for w in worlds(payload):
+        w["transferred_mwh_total"] = w["transferred_mwh_day"]
+    return payload
+
+
+def _flip_device_flag(payload):
+    w = worlds(payload)[123 % len(worlds(payload))]
+    w["device_task_met"] = not w["checks"]["device_task_met"]
+    return payload
+
+
+def _duplicate_world(payload):
+    r = payload["runs"][0]
+    r["worlds"].append(copy.deepcopy(r["worlds"][0]))
+    return payload
+
+
+def _break_energy_closure(payload):
+    w = worlds(payload)[3]
+    w["energy_breakdown"]["total"] *= 1.001
+    return payload
+
+
+def _forge_lock_hash(payload):
+    payload["meta"]["source_lock"]["files"]["src/market/settlement.py"] = "deadbeefdeadbeef0000"
+    return payload
+
+
+def _drop_lock(payload):
+    payload["meta"].pop("source_lock", None)
+    return payload
+
+
+DATA_MUTATIONS = [
+    ("惩罚退回单个代表日口径 (作废算法的特征)", _penalty_back_to_day_scale),
+    ("转移电量按代表日落档 (单价自洽但尺度错)", _energy_back_to_day_scale),
+    ("某世界的设备结论与 checks 里的同一字段相反", _flip_device_flag),
+    ("同一评估世界在一个组合里被记两次", _duplicate_world),
+    ("某世界年成交电量偏 0.1%, 不再闭合于 Q", _break_energy_closure),
+    ("源锁里 settlement.py 的哈希被改", _forge_lock_hash),
+    ("整段源锁被删掉, 数字无法追溯代码版本", _drop_lock),
+]
+
+
+def run(texts: dict, paths: dict, payload: dict = None) -> tuple:
+    """把 (可能变异的) 文档与数据写到临时文件, 用审计器的真实入口跑一遍。"""
     for key, path in paths.items():
         with open(path, "w", encoding="utf-8") as f:
             f.write(texts[key])
     sys.argv = ["selfcheck", "--md", paths["报告"], "--readme", paths["README"]]
+    if payload is not None:
+        with open(paths["数据"], "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        sys.argv += ["--json", paths["数据"]]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = V.main()
@@ -65,15 +132,27 @@ def run(texts: dict, paths: dict) -> tuple:
     return rc, (lines[0] if lines else "(无输出)")
 
 
+def _judge(label: str, rc: int, first: str, missed: list) -> None:
+    hit = bool(re.search(r"\[XX\]|Traceback|Error", first))
+    ok = rc == 1 and hit
+    print(f"  [{'抓到' if ok else '漏掉':<4}] {label:<40} rc={rc}  {first[:66]}")
+    if not ok:
+        missed.append(label)
+
+
 def main() -> int:
     tmp = tempfile.gettempdir()
     paths = {"报告": os.path.join(tmp, "_selfcheck_报告.md"),
-             "README": os.path.join(tmp, "_selfcheck_README.md")}
+             "README": os.path.join(tmp, "_selfcheck_README.md"),
+             "数据": os.path.join(tmp, "_selfcheck_data.json")}
     base = {k: open(v, encoding="utf-8").read() for k, v in FILES.items()}
-    rc, first = run(base, paths)
+    base_data = json.load(open(DATA, encoding="utf-8"))
+    frozen = json.dumps(base_data, sort_keys=True, ensure_ascii=False)
+
+    rc, first = run(base, paths, base_data)
     print(f"基准 (未变异): rc={rc}  {first[:90]}")
     if rc != 0:
-        print("文档本身就没通过审计, 先修正文再跑自检")
+        print("文档/数据本身就没通过审计, 先修正再跑自检")
         return 1
 
     missed = []
@@ -84,12 +163,19 @@ def main() -> int:
             missed.append(label)
             continue
         texts[key] = mut(texts[key])
-        rc, first = run(texts, paths)
-        hit = bool(re.search(r"\[XX\]|Traceback|Error", first))
-        print(f"  [{'抓到' if rc == 1 and hit else '漏掉':<4}] {label:<40} rc={rc}  {first[:66]}")
-        if rc != 1 or not hit:
+        _judge(label, *run(texts, paths, base_data), missed=missed)
+
+    for label, mut in DATA_MUTATIONS:
+        payload = mut(copy.deepcopy(base_data))
+        if json.dumps(payload, sort_keys=True, ensure_ascii=False) == frozen:
+            print(f"  [空转] {label}: 变异没改到任何字段")
             missed.append(label)
-    print(f"\n{len(MUTATIONS)} 条变异, 漏掉 {len(missed)} 条"
+            continue
+        _judge(label, *run(base, paths, payload), missed=missed)
+
+    n = len(MUTATIONS) + len(DATA_MUTATIONS)
+    print(f"\n{n} 条变异 ({len(MUTATIONS)} 条打文档, {len(DATA_MUTATIONS)} 条打数据), "
+          f"漏掉 {len(missed)} 条"
           + (f": {missed}" if missed else " (检查器对每条错数都会失败)"))
     return 1 if missed else 0
 

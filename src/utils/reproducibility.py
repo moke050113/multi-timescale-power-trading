@@ -1,0 +1,91 @@
+"""
+运行源锁 (审计修复路线 第 5 步 / 审计发现 N05)
+
+只写"训练种子 = 42"不足以复现: 同一批种子配上改过的源代码会给出另一组数字,
+而结果 JSON 里看不出源代码变过。这里把决定数值的源代码文件哈希、git 提交号、
+解释器与库版本一起写进 meta, 让发布出来的每个 JSON 都能追溯到具体代码版本。
+
+复现前先比对 source_lock.files: 哈希不一致 = 不同代码, 发布数字不能拿来对账。
+"""
+import hashlib
+import os
+import subprocess
+import sys
+
+# 改变这些文件里的任何一行, 结果数字都可能变 —— 全部落进源锁
+LOCKED_FILES = (
+    "src/utils/config.py",
+    "src/market/environment.py",
+    "src/market/settlement.py",
+    "src/market/market_models.py",
+    "src/load/flexible_executor.py",
+    "src/load/industrial_load.py",
+    "src/load/ev_model.py",
+    "src/load/load_scenarios.py",
+    "src/agent/sac_agent.py",
+    "src/agent/multi_agent.py",
+    "src/agent/rule_policies.py",
+    "experiments/run_four_arm_benchmark.py",
+)
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def _pkg_version(name: str):
+    mod = sys.modules.get(name)
+    if mod is None:
+        try:
+            import importlib
+            mod = importlib.import_module(name)
+        except Exception:
+            return None
+    return getattr(mod, "__version__", None)
+
+
+def _git(root: str, *args):
+    try:
+        out = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True,
+                             check=True).stdout.strip()
+        return out
+    except Exception:
+        return None
+
+
+def _changed_paths(root: str):
+    """工作树相对 HEAD 的改动 (含未跟踪), 不解析 porcelain 列宽, 避免格式/换行过滤器差异。"""
+    out = set()
+    for cmd in (("diff", "--name-only", "HEAD"), ("ls-files", "--others", "--exclude-standard")):
+        text = _git(root, *cmd)
+        if text:
+            out.update(line for line in text.splitlines() if line)
+    return sorted(out)
+
+
+def source_lock(root: str = None) -> dict:
+    """当前代码树 + 运行环境的指纹 (键序稳定, 可直接写 JSON)。"""
+    if root is None:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    files = {}
+    for rel in LOCKED_FILES:
+        path = os.path.join(root, *rel.split("/"))
+        files[rel] = _file_sha256(path) if os.path.isfile(path) else "MISSING"
+    changed = _changed_paths(root)
+    lock = {
+        "git_commit": _git(root, "rev-parse", "HEAD"),
+        "git_dirty": bool(changed) if _git(root, "rev-parse", "HEAD") else None,
+        "git_dirty_paths": changed,
+        "python": sys.version.split()[0],
+        "numpy": _pkg_version("numpy"),
+        "torch": _pkg_version("torch"),
+        "files": files,
+    }
+    missing = [k for k, v in files.items() if v == "MISSING"]
+    if missing:
+        raise RuntimeError(f"源锁清单里的文件不存在 (改名后清单未更新): {missing}")
+    return lock

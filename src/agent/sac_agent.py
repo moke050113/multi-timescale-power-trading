@@ -11,7 +11,7 @@ from typing import Tuple, Dict
 from collections import deque
 import random
 
-from ..utils.config import DRL_PARAMS
+from ..utils.config import ACTION_BOUNDS, DRL_PARAMS
 
 
 # ============================================================
@@ -136,7 +136,7 @@ class SACAgent:
         buffer_size: int = DRL_PARAMS["buffer_size"],
         batch_size: int = DRL_PARAMS["batch_size"],
         init_alpha: float = 0.2,
-        action_scale: float = 5.0,
+        action_scale: float = ACTION_BOUNDS["ratio_raw_limit"],
     ):
         self.gamma = gamma
         self.tau = tau

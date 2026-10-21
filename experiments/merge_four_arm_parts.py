@@ -33,6 +33,16 @@ def load_parts(paths):
         diff = [k for k in FROZEN_KEYS if p["meta"].get(k) != ref.get(k)]
         if diff:
             raise ValueError(f"{path} 与 {paths[0]} 的冻结预算不一致: {diff}")
+        # 源锁不同 = 分片由不同代码产生, 拼在一起的数字无法追溯到一次运行
+        a, b = ref.get("source_lock"), p["meta"].get("source_lock")
+        if a is not None or b is not None:
+            if a is None or b is None:
+                raise ValueError(f"{path} 与 {paths[0]} 一份有源锁一份没有, 拒绝合并")
+            same = [k for k in ("files", "numpy", "torch") if a.get(k) != b.get(k)]
+            if same:
+                raise ValueError(f"{path} 与 {paths[0]} 的源锁 {same} 不一致 "
+                                 f"(commit {a.get('git_commit')} vs {b.get('git_commit')}), "
+                                 f"分片不是同一次代码状态跑出来的")
     return parts
 
 

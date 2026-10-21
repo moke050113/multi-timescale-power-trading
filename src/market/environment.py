@@ -43,7 +43,7 @@ from gymnasium import spaces
 from typing import Dict, Optional, Tuple
 
 from ..utils.config import (
-    TOTAL_DEMAND, MARKET_BOUNDS, SIM_PARAMS, DRL_PARAMS
+    TOTAL_DEMAND, MARKET_BOUNDS, SIM_PARAMS, DRL_PARAMS, ACTION_BOUNDS
 )
 from ..load.ev_model import EVLoadModel
 from ..load.industrial_load import IndustrialLoadModel
@@ -147,14 +147,20 @@ class TradingEnvironment(gym.Env):
         self.gamma = 0.0
         self.monthly_spot_costs = []
         self.episode_cost = 0.0
+        self.action_oob = 0                     # 本回合越界动作计数 (四臂同可达集的凭证)
         self.total_market_cost = 0.0        # 4 级市场累计成本
-        self.total_flexible_penalty = 0.0   # 柔性转移惩罚累计
+        self.total_flexible_penalty = 0.0   # 柔性转移惩罚累计 (元, 月电量口径)
+        self.total_transferred_mwh = 0.0    # 累计转移电量 (MWh, 月电量口径; 惩罚 = 它 × 50)
         self.flexible_cost_saving = 0.0     # 柔性调度节约 (相对同月保障调度, 含惩罚)
         self.device_checks = []             # 逐月设备执行诊断 (达标/守恒)
 
         # 动作空间: [ratio_raw (midlong), flexible_action (spot)]
+        # 边界来自 ACTION_BOUNDS —— 四臂共用同一可达集, 任何臂都不得用到其它臂无法输出的动作
+        self.raw_limit = float(ACTION_BOUNDS["ratio_raw_limit"])
+        self.intensity_limit = float(ACTION_BOUNDS["intensity_limit"])
         self.action_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(2,), dtype=np.float32
+            low=np.array([-self.raw_limit, -self.intensity_limit], dtype=np.float32),
+            high=np.array([self.raw_limit, self.intensity_limit], dtype=np.float32),
         )
 
         # 状态空间: 13 维
@@ -193,8 +199,10 @@ class TradingEnvironment(gym.Env):
         self.gamma = 0.0
         self.monthly_spot_costs = []
         self.episode_cost = 0.0
+        self.action_oob = 0
         self.total_market_cost = 0.0
         self.total_flexible_penalty = 0.0
+        self.total_transferred_mwh = 0.0
         self.flexible_cost_saving = 0.0
         self.device_checks = []
         self._publish_for_next_decision()
@@ -206,8 +214,12 @@ class TradingEnvironment(gym.Env):
     # ------------------------------------------------------------
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         action = np.asarray(action, dtype=np.float32).flatten()
-        ratio_raw = float(action[0])
-        flexible_action = float(np.clip(action[1], -1.0, 1.0))
+        raw_in, inten_in = float(action[0]), float(action[1])
+        # 越界动作不静默接受: 裁剪后计数, 由逐回合验收判为"对照不同可达集"失败
+        ratio_raw = float(np.clip(raw_in, -self.raw_limit, self.raw_limit))
+        flexible_action = float(np.clip(inten_in, -self.intensity_limit, self.intensity_limit))
+        if max(abs(raw_in - ratio_raw), abs(inten_in - flexible_action)) > 1e-6:
+            self.action_oob += 1
 
         cost = 0.0
         flexible_penalty = 0.0
@@ -267,8 +279,11 @@ class TradingEnvironment(gym.Env):
 
             executed = self.executor.execute_day(spot_prices, intensity)
             neutral = self.executor.execute_day(spot_prices, 0.0)
-            month_demand_mwh = executed["net_load_mwh"] * self.days_per_month * self.demand_scale
-            flexible_penalty = executed["penalty"]
+            # 代表日 → 本月的统一尺度因子: 市场电量与转移惩罚必须用同一个因子,
+            # 否则"同一天的电"在结算里算 30 天、在惩罚里只算 1 天 (迭代 8.11 前是错的)。
+            month_factor = self.days_per_month * self.demand_scale
+            month_demand_mwh = executed["net_load_mwh"] * month_factor
+            flexible_penalty = executed["penalty"] * month_factor
 
             cost = self.settlement.settle_spot(
                 spot_prices, self.current_month, month_demand_mwh,
@@ -276,12 +291,14 @@ class TradingEnvironment(gym.Env):
             )
             self.monthly_spot_costs.append(cost)
             self.total_flexible_penalty += flexible_penalty
+            self.total_transferred_mwh += executed["ind"]["transferred_mwh"] * month_factor
 
             # 基准口径: 同一价格、同一合同、只做保障调度 (强度 0) 时的现货成本 + 惩罚
-            neutral_demand = neutral["net_load_mwh"] * self.days_per_month * self.demand_scale
+            neutral_demand = neutral["net_load_mwh"] * month_factor
             no_flex_cost = self._spot_cost_of(spot_prices, self.gamma, self.current_month,
                                               neutral_demand)
-            saving = max(0.0, (no_flex_cost + neutral["penalty"]) - (cost + flexible_penalty))
+            saving = max(0.0, (no_flex_cost + neutral["penalty"] * month_factor)
+                         - (cost + flexible_penalty))
             self.flexible_cost_saving += saving
             self.device_checks.append(self._device_check(executed, self.current_month))
 
@@ -295,7 +312,9 @@ class TradingEnvironment(gym.Env):
             self.current_step += 1
             info["stage"] = "spot"
             info["spot_cost"] = cost
-            info["flexible_penalty"] = flexible_penalty
+            # 本步 (本月) 惩罚单独命名: info 的 flexible_penalty 一律指回合累计,
+            # 否则最后一个月的惩罚会被当成全年惩罚读走。
+            info["step_flexible_penalty"] = flexible_penalty
             info["flexible_saving"] = saving
             info["flexible_action"] = flexible_action
             info["intensity"] = executed["intensity"]
@@ -488,6 +507,7 @@ class TradingEnvironment(gym.Env):
         )
         return {
             "step": self.current_step,
+            "action_oob": int(self.action_oob),
             "month": self.current_month,
             "world": self.current_world,
             "stage": self.current_stage,
@@ -499,6 +519,7 @@ class TradingEnvironment(gym.Env):
             "total_cost": total_cost_including_penalty,
             "market_cost": self.settlement.get_total_cost(),
             "flexible_penalty": self.total_flexible_penalty,
+            "flexible_transferred_mwh": self.total_transferred_mwh,
             "episode_cost": self.episode_cost,
             "flexible_cost_saving": self.flexible_cost_saving,
             "load_scenario": self.load_scenario,

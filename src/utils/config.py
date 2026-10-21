@@ -99,7 +99,7 @@ INDUSTRIAL_LOAD_PARAMS = {
     "total_power":     200,     # 总功率 (kW)
     "transferable_ratio": 0.3, # 可转移比例
     "transfer_window": 4,      # 转移窗口 (小时)
-    "transfer_cost":   50,     # 转移惩罚成本 (元/MWh)
+    "transfer_cost":   50,     # 转移惩罚成本 (元/MWh, 按**月电量口径**: 代表日转移量 × days_per_month × demand_scale)
     "min_production":  0.6,    # 最低生产负荷率
 }
 
@@ -133,4 +133,14 @@ SIM_PARAMS = {
     "hours_per_day":   24,        # 每日时段数
     "days_per_month":  30,        # 每月天数
     "random_seed":     42,        # 随机种子
+}
+
+# ============================================================
+# 动作可达集: 四臂共用的**唯一**边界来源
+# ============================================================
+# 规则臂与 SAC 必须在同一可达集内比较, 否则"规则臂能到、SAC 不可能输出"的动作
+# 会让四臂对照失去可比性 (迭代 8.11 前规则臂用 cap=8 反解覆盖率, 越过了 Box 边界)。
+ACTION_BOUNDS = {
+    "ratio_raw_limit": 5.0,      # 中长期覆盖率反解变量 raw 的绝对值上限 (SAC tanh×scale 同为 5)
+    "intensity_limit": 1.0,      # 现货柔性强度上限
 }

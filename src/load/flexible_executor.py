@@ -89,6 +89,8 @@ class FlexibleExecutor:
 
         Returns:
             dict: net_load_mwh(24,), energy_mwh, penalty, ev / ind 诊断
+                  net_load_mwh 与 penalty 都是**单个代表日**的量; 折算到本月由调用方统一乘
+                  days_per_month × demand_scale (见 TradingEnvironment.step 的现货分支)。
         """
         price = np.asarray(price_signal, dtype=float)
         assert price.shape == (self.hours,), f"价格信号长度须为 {self.hours}"

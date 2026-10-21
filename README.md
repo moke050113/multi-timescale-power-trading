@@ -393,7 +393,7 @@ PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py \
 
 <div align="center">
 
-**项目状态**: ✅ 已完成（代码+实验100%，报告撰写中）
+**项目状态**: 代码与实验可复现（四臂基准、消融、审计脚本与发布数据齐全）；答辩材料与署名信息待补
 
 **最后更新**: 2026-10-19
 

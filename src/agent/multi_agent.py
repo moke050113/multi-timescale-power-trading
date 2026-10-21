@@ -31,6 +31,7 @@ import numpy as np
 from typing import Dict, Optional, Union
 
 from .sac_agent import SACAgent
+from ..utils.config import ACTION_BOUNDS
 
 
 STAGE_MIDLONG = {"annual", "monthly", "intraday", 0, 1, 2}
@@ -56,10 +57,10 @@ class MultiScaleCoordinator:
         self,
         state_dim: int = 13,
         use_dual_agent: bool = True,
-        midlong_action_scale: float = 5.0,
-        spot_action_scale: float = 1.0,
+        midlong_action_scale: float = ACTION_BOUNDS["ratio_raw_limit"],
+        spot_action_scale: float = ACTION_BOUNDS["intensity_limit"],
         single_action_dim: int = 2,
-        single_action_scale: float = 5.0,
+        single_action_scale: float = ACTION_BOUNDS["ratio_raw_limit"],
     ):
         self.use_dual_agent = use_dual_agent
         self.state_dim = state_dim

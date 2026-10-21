@@ -7,6 +7,7 @@
     3. 费用可手算    : 逐台账记录用 quantity×price (现货按小时, 过购按折价) 复算 == 系统总成本
     4. 无虚假退款    : 平价市场下任何柔性动作都赚不到钱 (往返损耗只会增加成本);
                        柔性只改变现货偏差, 绝不冲销已签合同成本
+    5. 单位口径一致  : 柔性转移惩罚与结算用同一个"代表日→本月"尺度因子 (迭代 8.11 前惩罚只算 1 天)
 """
 import os
 import sys
@@ -17,7 +18,7 @@ import numpy as np
 
 from src.market.environment import TradingEnvironment
 from src.load.load_scenarios import LoadScenarioBuilder
-from src.utils.config import TOTAL_DEMAND
+from src.utils.config import TOTAL_DEMAND, INDUSTRIAL_LOAD_PARAMS
 
 NUM_STEPS = 37  # 1 年度 + 12 × 3
 
@@ -204,6 +205,44 @@ def test_month_residual_identity():
           f"偏差={dev.sum():+.3f} MWh, 现货成本 {cost:,.2f} 元")
 
 
+def test_transfer_penalty_uses_month_energy_scale():
+    """单位口径: 柔性转移惩罚按**月电量**计, 与结算用的尺度因子完全一致。
+
+    修正前惩罚只算代表日 (1 天), 结算却算 30×demand_scale 天, 同一天的电在
+    两处口径不同 → 柔性收益被系统性高估。
+    """
+    env = TradingEnvironment(include_flexible=True, seed=42)
+    K = env.days_per_month * env.demand_scale          # 代表日 → 本月 的统一因子
+    tc = INDUSTRIAL_LOAD_PARAMS["transfer_cost"]
+
+    for intensities, world in (([1.0], 0), ([-1.0], 3), (_random_intensities(np.random.default_rng(9)), 5)):
+        info, _ = _rollout(env, intensities, ratio_raw=0.4, world=world)
+        day_mwh = sum(c["ind_transferred_mwh"] for c in info["device_checks"])
+        assert day_mwh > 0.0, (intensities, "无转移量, 该用例失去判别力")
+
+        # 1) 累计转移电量 = 代表日转移量 × 同一个 K
+        assert abs(env.total_transferred_mwh - day_mwh * K) < 1e-9, (
+            intensities, env.total_transferred_mwh, day_mwh * K)
+        # 2) 惩罚 = 50 元/MWh × 月口径转移电量 (可手算, 不是"每天收一次")
+        assert abs(info["flexible_penalty"] - tc * env.total_transferred_mwh) < 1e-6, (
+            intensities, info["flexible_penalty"], tc * env.total_transferred_mwh)
+        # 3) 总成本 = 市场成本 + 惩罚, 没有第三项偷渡
+        assert abs(info["total_cost"] - info["market_cost"]
+                   - info["flexible_penalty"]) < 1e-6, intensities
+        # 4) 反向对照: 惩罚/代表日惩罚 的倍数必须正好是 K, 而不是 1 (代表日口径)
+        ratio = info["flexible_penalty"] / (tc * day_mwh)
+        assert abs(ratio - K) < 1e-6, (intensities, ratio, K)
+        assert ratio > 1.0 + 1e-6, ("惩罚仍是代表日口径", ratio)
+        print(f"    强度 {intensities[:3]}...: 转移 {env.total_transferred_mwh:.3f} MWh "
+              f"(代表日 {day_mwh:.3f} × {K:.4f}), 惩罚 {info['flexible_penalty']:,.0f} 元, "
+              f"占月成本 {100 * info['flexible_penalty'] / info['total_cost']:.2f}%")
+
+    # 保障调度 (强度 0) 不转移电, 惩罚必须为 0
+    info, _ = _rollout(env, [0.0], world=0)
+    assert env.total_transferred_mwh == 0.0 and info["flexible_penalty"] == 0.0
+    print("  [PASS] 惩罚与结算同尺度: 月惩罚 = 50 元/MWh × (代表日转移量 × days_per_month × demand_scale)")
+
+
 if __name__ == "__main__":
     tests = [
         ("合同闭合/实际需求守恒", test_contract_closure_and_actual_demand_conservation),
@@ -213,6 +252,7 @@ if __name__ == "__main__":
         ("平价不可套利", test_flat_price_flexibility_cannot_make_money),
         ("柔性不冲销合同", test_flexibility_never_rewrites_signed_contracts),
         ("单月偏差恒等式", test_month_residual_identity),
+        ("惩罚单位口径", test_transfer_penalty_uses_month_energy_scale),
     ]
     failed = []
     for name, fn in tests:

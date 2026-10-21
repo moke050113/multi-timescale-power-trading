@@ -25,6 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from experiments.plot_four_arm_results import index_runs, load          # noqa: E402
 from experiments.report_tables import layer_share, render, seed_pairwise  # noqa: E402
 from experiments.summarize_ablation import load_base, summarize          # noqa: E402
+from src.utils.config import INDUSTRIAL_LOAD_PARAMS, SIM_PARAMS, TOTAL_DEMAND  # noqa: E402
+from src.utils.reproducibility import source_lock                        # noqa: E402
 
 LEARNERS = ("sac_rule", "dual_sac")
 THRESHOLD = 0.4            # 5.1 节的运行间噪声门槛 (%), 小于它的差值不得用作结论
@@ -70,6 +72,13 @@ class Checker:
             print(f"  [XX] {label}: 重算={computed:.6g} 正文={written:.6g} "
                   f"{'超差' if not close else ''}{'正文缺失' if not present else ''} ({token!r})")
 
+    def plain(self, label: str, ok: bool, detail: str = "") -> None:
+        """只验数据自身的一致性, 不要求正文出现某个字符串。"""
+        self.n += 1
+        if not ok:
+            self.bad += 1
+            print(f"  [XX] {label}{': ' + detail if detail else ''}")
+
     def finish(self) -> int:
         print(f"检查 {self.n} 项主张, 不符 {self.bad} 项")
         return 1 if self.bad else 0
@@ -78,6 +87,38 @@ class Checker:
 def rng(values) -> tuple:
     a = np.asarray(values, dtype=float)
     return float(a.min()), float(a.max())
+
+
+def penalty_units(worlds) -> dict:
+    """
+    只凭 JSON 复算惩罚的单位链 (审计 N01/N07):
+        代表日转移电量 × (days_per_month × demand_scale) = 月口径转移电量 × 单价 = 惩罚
+    任何一环按"单个代表日"计, 这里就会露馅 —— 不必重跑训练即可否定作废口径。
+    """
+    K = int(SIM_PARAMS["days_per_month"])
+    tc = float(INDUSTRIAL_LOAD_PARAMS["transfer_cost"])
+    need = ("demand_scale", "transferred_mwh_day", "transferred_mwh_total")
+    absent = sorted({k for w in worlds for k in need if k not in w})
+    if absent:
+        # 字段缺失 = 这份 JSON 出自改口径之前的驱动; 让每条单位检查都判不过, 而不是抛 KeyError
+        return {"absent": absent, "scales": set(), "month_factor": 0.0,
+                "worst_scale": float("inf"), "worst_unit": float("inf"), "n_flex": 0,
+                "ratio": float("inf"), "max_penalty": 0.0, "max_share": 0.0}
+    scales = {round(float(w["demand_scale"]), 12) for w in worlds}
+    ds = float(next(iter(scales))) if len(scales) == 1 else float("nan")
+    pen = np.array([w["flexible_penalty"] for w in worlds], dtype=float)
+    mwh = np.array([w["transferred_mwh_total"] for w in worlds], dtype=float)
+    day = np.array([w["transferred_mwh_day"] for w in worlds], dtype=float)
+    cost = np.array([w["cost"] for w in worlds], dtype=float)
+    flex = mwh > 0
+    return {
+        "absent": [], "scales": scales, "month_factor": K * ds,
+        "worst_scale": float(np.max(np.abs(mwh - day * K * ds))),
+        "worst_unit": float(np.max(np.abs(pen - tc * mwh))),
+        "n_flex": int(flex.sum()),
+        "ratio": float(np.median(pen[flex] / (tc * day[flex]))) if flex.any() else 0.0,
+        "max_penalty": float(pen.max()), "max_share": float((100.0 * pen / cost).max()),
+    }
 
 
 def nums(cell: str) -> list:
@@ -128,6 +169,30 @@ def main() -> int:
     S = {s[:1]: s for s in scenarios}
     c = Checker(md)
 
+    # ---------- 0. 源锁: 发布出来的数字必须能追溯到产生它的那一份代码 (审计 N05/N07) ----------
+    cur_lock = source_lock()
+
+    def check_lock(meta, who: str) -> dict:
+        lk = meta.get("source_lock")
+        c.n += 1
+        if lk is None:
+            c.bad += 1
+            print(f"  [XX] {who}: meta 里没有 source_lock —— "
+                  f"无法确认数字由哪一份代码产生, 需按当前代码重跑")
+            return {}
+        bad = []
+        for f, want in cur_lock["files"].items():
+            got = lk.get("files", {}).get(f)
+            if got != want:
+                bad.append(f"{f}: {got} != {want}")
+        for k in ("numpy", "torch"):
+            if lk.get(k) != cur_lock[k]:
+                bad.append(f"{k}: {lk.get(k)} != {cur_lock[k]}")
+        c.plain(f"{who} 的源锁与当前代码树一致", not bad, "; ".join(bad[:3]))
+        return lk
+
+    json_lock = check_lock(data["meta"], args.json)
+
     # ---------- 1. 四张表与生成器逐字符一致 ----------
     blocks, cur = [], []
     for line in render(data, strong=strong).splitlines():
@@ -163,8 +228,42 @@ def main() -> int:
             "37 步闭环", 0)
     c.value("设备完成任务世界数", float(sum(wch["device_task_met"] for wch in chk)), 600,
             "设备日任务按时完成", 0)
-    c.value("总成本 − 市场成本 上限", max(abs(w["cost"] - w["market_cost"]) for w in worlds),
-            160, "最多 160 元", 0.5)
+
+    # ---------- 2b. 数据鉴真: 惩罚单位与源锁 (审计 N01/N05/N07) ----------
+    u = penalty_units(worlds)
+    c.plain("落盘记录带惩罚单位链所需字段", not u["absent"],
+            f"缺 {u['absent']} —— 这份 JSON 出自改口径之前的驱动, 必须按当前代码重跑")
+    c.plain("全部世界共用同一个 demand_scale", len(u["scales"]) == 1, str(sorted(u["scales"])))
+    c.plain("月电量 = 代表日电量 × days_per_month × demand_scale", u["worst_scale"] < 1e-6,
+            f"最大残差 {u['worst_scale']:.3g} MWh")
+    c.plain("惩罚 = 转移成本单价 × 月口径转移电量", u["worst_unit"] < 1e-6,
+            f"最大残差 {u['worst_unit']:.3g} 元")
+    c.plain("数据里确有发生转移的世界 (否则单位检查是空转)", u["n_flex"] > 0,
+            f"{u['n_flex']} 个世界")
+    c.plain("惩罚按整月电量而非单个代表日计", abs(u["ratio"] - u["month_factor"]) < 1e-6,
+            f"实测倍数 {u['ratio']:.4f}, 应为 {u['month_factor']:.4f}")
+    mx_pen, mx_share = u["max_penalty"], u["max_share"]
+    c.value("全年柔性转移惩罚上限", mx_pen, round(mx_pen), f"{mx_pen:,.0f} 元", 0.5)
+    c.value("柔性惩罚占年成本上限", mx_share, round(mx_share, 2), f"不超过 {mx_share:.2f}%", 0.005)
+    fx = [w for r in data["runs"] if r["arm"] == base for w in r["worlds"]]
+    net = np.array([w["energy_breakdown"]["total"] for w in worlds], dtype=float) - TOTAL_DEMAND
+    c.value("保障调度臂年成交电量对 Q 的最大残差", float(np.max(np.abs(
+        np.array([w["energy_breakdown"]["total"] for w in fx], dtype=float) - TOTAL_DEMAND))),
+        0.0, "年成交电量都闭合于 Q", 1e-6)
+    # 柔性动作只能通过 EV 往返损耗抬高网侧年电量, 绝不可能低于 Q (工业任务电量守恒)
+    c.plain("全部世界的年成交电量不低于 Q", float(net.min()) > -1e-9, f"最小 {net.min():+.4f} MWh")
+    ex = float(net.max()) / TOTAL_DEMAND * 100.0
+    c.plain("柔性挪动的年电量在 1% 以内 (只可能是 EV 往返损耗)", 0 <= ex < 1.0,
+            f"最多 +{ex:.3f}%")
+    mismatch = [i for i, w in enumerate(worlds)
+                if bool(w["device_task_met"]) != bool(w["checks"]["device_task_met"])]
+    c.plain("逐世界设备结论与 checks 里的同一字段不矛盾", not mismatch,
+            f"{len(mismatch)} 个世界两处记录不一致")
+    ew = int(data["meta"]["eval_worlds"])
+    bad_ids = [f"{r['scenario'][:1]}/{r['arm']}/seed{r['seed']}" for r in data["runs"]
+               if len({w["world"] for w in r["worlds"]}) != len(r["worlds"])
+               or not {w["world"] for w in r["worlds"]} <= set(range(ew))]
+    c.plain(f"每个组合的世界编号互不重复且都在 0~{ew - 1}", not bad_ids, str(bad_ids[:4]))
 
     def costs(scn, arm):
         return float(np.mean([r["mean_cost"] for r in by_key[(scn, arm)]]))
@@ -299,11 +398,24 @@ def main() -> int:
     for p in parts:
         v = os.path.basename(p)[len("ablation_"):-len(".json")]
         d = load(p)
+        part_lock = check_lock(d["meta"], p)
+        c.n += 1
+        if json_lock.get("files") and part_lock.get("files") != json_lock["files"]:
+            c.bad += 1
+            print(f"  [XX] {p}: 消融分片与主基准不是同一份代码, "
+                  f"完整方法与变体的配对差无法解释")
         c.n += 1
         if d["meta"].get("ablation") != ABL_EXPECT[v]:
             c.bad += 1
             print(f'  [XX] {v}: meta.ablation 不是 "只关这一项" {d["meta"].get("ablation")}')
         re_abl[v] = {a["arm"]: a for a in summarize(v, p, base_meta, base_a)["arms"]}
+        pu = penalty_units([w for r in d["runs"] for w in r["worlds"]])
+        c.plain(f"消融 {v}: 惩罚单位链也按月电量 (与完整方法同口径才可比)",
+                pu["worst_scale"] < 1e-6 and pu["worst_unit"] < 1e-6
+                and abs(pu["ratio"] - pu["month_factor"]) < 1e-6 and pu["scales"] == u["scales"],
+                f"残差 {pu['worst_scale']:.3g}/{pu['worst_unit']:.3g}, "
+                f"倍数 {pu['ratio']:.4f} vs {pu['month_factor']:.4f}, "
+                f"demand_scale {sorted(pu['scales'])} vs {sorted(u['scales'])}")
         worlds_of[v] = sum(len(r["worlds"]) for r in d["runs"])
         n_worlds += worlds_of[v]
         n_fail += len(d["failures"])
@@ -418,9 +530,10 @@ def main() -> int:
                          cells[col], 0)
         c.n += cr.n
         c.bad += cr.bad
-    elif args.verbose:
-        print(f"  ({args.readme} 不存在, 跳过跨文档一致性)")
-
+    else:
+        # README 复述了同一批数字, 它缺失时"跨文档一致"就只是一句空话 (审计 N07)
+        c.plain(f"{args.readme} 存在 (跨文档一致性的前提)", False,
+                "README 不在预期路径上, 无法检查跨文档复述是否脱钩")
     ok1 = all(a["delta_pct"] > THRESHOLD and all(d > 0 for d in seeds_of(a))
               and worse(a)[0] == worse(a)[1] for a in sh)
     c.value("5.9 结论一: 塑形两臂 Δ>门槛、逐种子同号、世界全更贵", float(ok1), 1.0,
@@ -434,10 +547,10 @@ def main() -> int:
     sh_txt = open("experiments/run_all_scenarios.sh", encoding="utf-8").read()
     c.value("5.9 局限4: 主基准调用不含任何 --no-* 开关", float("--no-" not in sh_txt), 1.0,
             "不含任何 `--no-*` 开关", 0)
-    drv = open("experiments/run_four_arm_benchmark.py", encoding="utf-8").read().splitlines()
-    c.value("5.9 局限4: 驱动 372-376 行把三项默认置为开启",
-            float("\n".join(drv[371:376]).count("not args.no_")), 3,
-            "run_four_arm_benchmark.py:372-376", 0)
+    drv = open("experiments/run_four_arm_benchmark.py", encoding="utf-8").read()
+    c.value("5.9 局限4: 驱动把三项消融开关默认置为开启",
+            float(len(re.findall(r"not args\.no_(?:exposure_shaping|spot_reward_scale|alternating)",
+                                 drv))), 3, "三项开关默认开启", 0)
     c.value("5.9 局限4: 主基准 JSON 无 meta.ablation 字段",
             float("ablation" not in base_meta), 1.0,
             "主基准分片产生于 `meta.ablation` 字段加入之前", 0)

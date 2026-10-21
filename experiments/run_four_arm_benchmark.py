@@ -23,6 +23,7 @@
 import argparse
 import json
 import os
+import random
 import sys
 import time
 
@@ -36,8 +37,9 @@ from src.agent.rule_policies import (
     STAGE_SPOT, RulePolicy, fixed_ratio_action, forecast_intensity, rolling_rule_action,
 )
 from src.market.environment import TradingEnvironment
-from src.utils.config import PRICE_SCENARIOS
+from src.utils.config import ACTION_BOUNDS, INDUSTRIAL_LOAD_PARAMS, PRICE_SCENARIOS
 from src.utils.logger import setup_logger
+from src.utils.reproducibility import source_lock
 
 logger = setup_logger("four_arm")
 
@@ -62,6 +64,9 @@ class SacArm:
     def __init__(self, coord: MultiScaleCoordinator, spot_from_rule: bool = False):
         self.coord = coord
         self.spot_from_rule = spot_from_rule
+        # 逐角色梯度步数: 三阶段交替与全程联合的"每个网络被更新了多少次"并不相同,
+        # 消融对比必须把它落档, 否则"冻结预算完全相同"是一句无法核对的话 (审计 N09)。
+        self.grad_steps = {"midlong": 0, "spot": 0}
 
     def act(self, obs, stage, deterministic=False):
         action = self.coord.select_action(obs, stage, deterministic=deterministic)
@@ -80,13 +85,21 @@ class SacArm:
         )
 
     def update(self, stage):
-        return self.coord.update(stage=stage)
+        metrics = self.coord.update(stage=stage)
+        # 只有真正执行了一步参数更新才会返回带前缀的指标 (冻结或经验池不足时返回空)
+        if any(k.startswith("midlong_") for k in metrics):
+            self.grad_steps["midlong"] += 1
+        if any(k.startswith("spot_") for k in metrics):
+            self.grad_steps["spot"] += 1
+        return metrics
 
     def set_phase(self, freeze_midlong: bool, freeze_spot: bool):
         self.coord.set_training_phase(freeze_midlong=freeze_midlong, freeze_spot=freeze_spot)
 
 
 def make_arm(arm: str, state_dim: int, seed: int):
+    # 经验池 minibatch 用标准库 random.sample, 只播 numpy/torch 锁不住它 (审计 N05)
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if arm == "fixed_rule":
@@ -95,7 +108,9 @@ def make_arm(arm: str, state_dim: int, seed: int):
         return RulePolicy(rolling_rule_action)
     coord = MultiScaleCoordinator(
         state_dim=state_dim, use_dual_agent=True,
-        midlong_action_scale=5.0, spot_action_scale=1.0,
+        # 动作尺度与环境的 action_space 同源, 规则臂与 SAC 臂共用一个可达集 (审计 N02)
+        midlong_action_scale=ACTION_BOUNDS["ratio_raw_limit"],
+        spot_action_scale=ACTION_BOUNDS["intensity_limit"],
     )
     if arm == "sac_rule":
         return SacArm(coord, spot_from_rule=True)
@@ -143,7 +158,11 @@ def rollout(env, arm, world=None, deterministic=True, learn=False):
         "world": None if env.current_world is None else int(env.current_world),
         "cost": float(info["total_cost"]),
         "market_cost": float(info["market_cost"]),
-        "flexible_penalty": float(info["flexible_penalty"]),
+        "flexible_penalty": float(env.total_flexible_penalty),
+        "transferred_mwh_total": float(env.total_transferred_mwh),
+        # 代表日口径的转移电量与尺度因子一起落档: 审计可只凭 JSON 复算惩罚单位 (N01/N07)
+        "transferred_mwh_day": float(sum(c["ind_transferred_mwh"] for c in info["device_checks"])),
+        "demand_scale": float(env.demand_scale),
         "flexible_saving": float(info.get("flexible_cost_saving", 0.0)),
         "cost_breakdown": {k: float(v) for k, v in info["cost_breakdown"].items()},
         "energy_breakdown": {k: float(v) for k, v in env.settlement.get_energy_breakdown().items()},
@@ -182,6 +201,12 @@ def _accounting_checks(env, info) -> dict:
             - info["market_cost"])),
         "device_task_met": bool(info["device_task_met"]),
         "finite_cost": bool(np.isfinite(info["total_cost"])),
+        # 四臂同可达集: 任何臂交出越界动作 (环境裁剪过) 即视为对照不成立
+        "action_oob": int(env.action_oob),
+        # 惩罚单位自证: 累计惩罚 (元) 必须等于 月电量口径累计转移量 × 50 元/MWh
+        "penalty_unit_residual": float(abs(
+            env.total_flexible_penalty
+            - INDUSTRIAL_LOAD_PARAMS["transfer_cost"] * env.total_transferred_mwh)),
     }
 
 
@@ -201,6 +226,10 @@ def check_failed(checks: dict) -> list:
         bad.append("device_task_unmet")
     if not checks["finite_cost"]:
         bad.append("nonfinite_cost")
+    if checks["penalty_unit_residual"] > 1e-6:
+        bad.append("penalty_unit_scale")
+    if checks["action_oob"]:
+        bad.append("action_out_of_bounds")
     return bad
 
 
@@ -270,6 +299,7 @@ def run_one(scenario, arm_name, seed, episodes, eval_worlds, load_scenario,
         "scenario": scenario, "arm": arm_name, "seed": seed,
         "trained": bool(trainable and do_train),
         "episodes": episodes if trainable and do_train else 0,
+        "grad_steps": dict(getattr(arm, "grad_steps", {})),
         "phase_history": phase_history,
         "n_worlds_passed": len(worlds),
         "mean_cost": float(np.mean(costs)) if costs else None,
@@ -379,6 +409,10 @@ def main():
 
     logger.info(f"四臂基准 | 场景 {len(scenarios)} | 臂 {arms} | 种子 {seeds} "
                 f"| episodes={episodes} | eval_worlds={eval_worlds}")
+    # 源锁在任何训练发生之前取: 结果 JSON 必须能追溯到产生它的那一份源代码
+    lock = source_lock()
+    logger.info(f"源锁 | commit={lock['git_commit']} | dirty={lock['git_dirty']} "
+                f"| torch={lock['torch']} numpy={lock['numpy']}")
 
     runs, failures = [], []
     for scenario in scenarios:
@@ -410,6 +444,7 @@ def main():
             "eval_worlds": eval_worlds, "phase_split": PHASE_SPLIT,
             "baseline_arm": BASELINE, "smoke": bool(args.smoke),
             "ablation": ablation,
+            "source_lock": lock,
             "note": "改进% 为同种子、同世界、同设备任务下相对 fixed_rule 臂的配对差异; "
                     "会计验收未通过的回合不进入汇总, 记录在 failures",
         },

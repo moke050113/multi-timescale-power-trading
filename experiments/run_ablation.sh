@@ -3,8 +3,11 @@
 # 场景选 A —— 四臂基准里学习臂相对两条规则臂都显著胜出的唯一场景之一。
 # 规则臂不使用 SAC 奖励, 不受这些开关影响, 因此只重跑两条学习臂;
 # 对照直接取 results/four_arm_benchmark.json 里场景 A 的完整方法结果。
+set -u
 cd "$(dirname "$0")/.."
-PY=/d/Miniconda/envs/power_trading/python.exe
+# 与 run_all_scenarios.sh 一样用环境变量覆盖, 不把某台机器的解释器路径写死
+# 例: PY=/d/Miniconda/envs/power_trading/python.exe bash experiments/run_ablation.sh
+PY=${PY:-python}
 
 run_variant() {
   local V=$1; shift

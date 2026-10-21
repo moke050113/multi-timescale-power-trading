@@ -15,7 +15,8 @@
 import numpy as np
 
 from ..utils.config import (
-    EV_PARAMS, FIXED_RATIOS, INDUSTRIAL_LOAD_PARAMS, MARKET_BOUNDS, SETTLEMENT_PARAMS,
+    ACTION_BOUNDS, EV_PARAMS, FIXED_RATIOS, INDUSTRIAL_LOAD_PARAMS, MARKET_BOUNDS,
+    SETTLEMENT_PARAMS,
 )
 
 STAGE_ANNUAL, STAGE_MONTHLY, STAGE_INTRADAY, STAGE_SPOT = 0, 1, 2, 3
@@ -39,8 +40,13 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def raw_for_coverage(target: float, lo: float, hi: float, cap: float = 8.0) -> float:
-    """把期望覆盖率反解成 ratio_raw: 环境用 target = lo + sigmoid(raw)·(hi − lo) 定价。"""
+def raw_for_coverage(target: float, lo: float, hi: float,
+                     cap: float = ACTION_BOUNDS["ratio_raw_limit"]) -> float:
+    """把期望覆盖率反解成 ratio_raw: 环境用 target = lo + sigmoid(raw)·(hi − lo) 定价。
+
+    cap 取 ACTION_BOUNDS["ratio_raw_limit"] —— 与 SAC 的 tanh×action_scale 同界,
+    反解不到目标覆盖率时**如实停在可达边界上**, 不再用 cap=8 走到 SAC 无法输出的动作。
+    """
     frac = (target - lo) / max(hi - lo, 1e-9)
     frac = float(np.clip(frac, 1e-4, 1.0 - 1e-4))
     return float(np.clip(np.log(frac / (1.0 - frac)), -cap, cap))

@@ -63,6 +63,11 @@ def summarize(variant: str, path: str, base_meta: dict, base: dict) -> dict:
             "gamma": float(r["mean_gamma"]), "gamma_ref": float(ref["mean_gamma"]),
             "intensity": float(r["mean_intensity_abs"]),
             "intensity_ref": float(ref["mean_intensity_abs"]),
+            # 两个网络各自被更新了多少次: 交替训练与全程联合的这一步预算并不相同 (审计 N09)
+            "grad_midlong": int(r.get("grad_steps", {}).get("midlong", 0)),
+            "grad_spot": int(r.get("grad_steps", {}).get("spot", 0)),
+            "grad_midlong_ref": int(ref.get("grad_steps", {}).get("midlong", 0)),
+            "grad_spot_ref": int(ref.get("grad_steps", {}).get("spot", 0)),
         })
     by_arm = defaultdict(list)
     for row in rows:
@@ -82,6 +87,10 @@ def summarize(variant: str, path: str, base_meta: dict, base: dict) -> dict:
             "gamma_ref": float(np.mean([x["gamma_ref"] for x in rs])),
             "intensity": float(np.mean([x["intensity"] for x in rs])),
             "intensity_ref": float(np.mean([x["intensity_ref"] for x in rs])),
+            "grad_midlong": int(np.mean([x["grad_midlong"] for x in rs])),
+            "grad_spot": int(np.mean([x["grad_spot"] for x in rs])),
+            "grad_midlong_ref": int(np.mean([x["grad_midlong_ref"] for x in rs])),
+            "grad_spot_ref": int(np.mean([x["grad_spot_ref"] for x in rs])),
             "seeds": rs,
         })
     return {"variant": variant, "file": os.path.basename(path),

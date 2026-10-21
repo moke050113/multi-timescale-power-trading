@@ -8,6 +8,7 @@
     4. 现货调度强度 = 规则公式手算值 (含单位换算)
     5. 四个臂在同一批世界上电量守恒 / 无虚假退款 / 设备按时完成任务
     6. 分层臂只训中长期: 调度 SAC 不写经验, 下层强度确实来自规则
+    7. 四个臂共用同一个动作可达集, 越界动作被环境计数并判为对照不成立 (审计 N02)
 """
 import os
 import sys
@@ -17,13 +18,15 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from experiments.run_four_arm_benchmark import (
-    ARMS, check_failed, make_arm, rollout,
+    ARMS, _accounting_checks, check_failed, make_arm, rollout,
 )
 from src.agent.rule_policies import (
-    STAGE_SPOT, V2G_GATE, forecast_intensity, rolling_rule_action,
+    STAGE_SPOT, V2G_GATE, forecast_intensity, raw_for_coverage, rolling_rule_action,
 )
 from src.market.environment import TradingEnvironment
-from src.utils.config import FIXED_RATIOS, INDUSTRIAL_LOAD_PARAMS, MARKET_BOUNDS, PRICE_SCENARIOS
+from src.utils.config import (
+    ACTION_BOUNDS, FIXED_RATIOS, INDUSTRIAL_LOAD_PARAMS, MARKET_BOUNDS, PRICE_SCENARIOS,
+)
 
 SCENARIOS = list(PRICE_SCENARIOS.keys())
 SEED = 42
@@ -181,6 +184,63 @@ def test_hierarchical_arm_trains_only_midlong():
     print("  [PASS] 分层臂: 调度 SAC 零经验, 中长期 25 条/回合, 现货强度来自预测调度规则")
 
 
+def test_arms_share_one_action_reachability():
+    """
+    对照成立的前提: 四个臂面对**同一个动作可达集**。
+
+    修正前规则臂反解覆盖率用 cap=8, 而 SAC 的 tanh×scale 最多 ±5,
+    规则臂因此能走到学习臂根本输出不了的动作 (审计 N02)。
+    """
+    env = _env()
+    env.reset(options={"world": 0})
+    hi = np.asarray(env.action_space.high, dtype=float)
+    assert np.allclose(hi, [ACTION_BOUNDS["ratio_raw_limit"],
+                            ACTION_BOUNDS["intensity_limit"]]), hi
+    assert np.allclose(env.action_space.low, -hi)
+
+    # 反解不到目标覆盖率时如实停在可达边界 (该边界 SAC 同样能输出)
+    cap = ACTION_BOUNDS["ratio_raw_limit"]
+    ann_hi = MARKET_BOUNDS["annual"]["max"]
+    assert abs(raw_for_coverage(ann_hi, 0.0, ann_hi) - cap) < 1e-12
+    assert abs(raw_for_coverage(0.0, 0.0, ann_hi) + cap) < 1e-12
+    reachable = 1.0 / (1.0 + np.exp(-cap))
+    assert reachable < 1.0 - 1e-6, "边界已能覆盖全部, 反向对照失去判别力"
+
+    # SAC 臂尺度 = 盒子上界: tanh 输出恒在 ±scale 内, 不会被环境再裁一刀
+    arm = make_arm("dual_sac", state_dim=13, seed=SEED)
+    assert arm.coord.midlong_agent.action_scale == cap
+    assert arm.coord.spot_agent.action_scale == hi[1]
+
+    for arm_name in ARMS:
+        a = make_arm(arm_name, state_dim=13, seed=SEED)
+        if arm_name == "sac_rule":
+            a.set_phase(freeze_midlong=False, freeze_spot=True)
+        # 确定性动作逐条落在盒子内 (规则臂与学习臂同界)
+        acts = [np.asarray(x[1]) for x in _actions_by_obs(a, _env())]
+        assert all(np.all(np.abs(x) <= hi + 1e-6) for x in acts), arm_name
+        for w in range(WORLDS):
+            for det in (True, False):
+                rec = rollout(env, a, world=w, deterministic=det)
+                assert rec["checks"]["action_oob"] == 0, (arm_name, w, det, rec["checks"])
+                assert not check_failed(rec["checks"])
+
+    # 反向用例: 越界动作不静默接受 —— 裁剪后计入 action_oob, 结果与边界动作一致
+    ref = TradingEnvironment(scenario_name="A_年度低价后期上涨", load_scenario="柔性适中",
+                             use_rule_dispatcher=False, seed=SEED)
+    ref.reset(options={"world": 0})
+    _, _, _, _, clipped_info = ref.step(np.array([cap, hi[1]], dtype=np.float32))
+    oob = TradingEnvironment(scenario_name="A_年度低价后期上涨", load_scenario="柔性适中",
+                             use_rule_dispatcher=False, seed=SEED)
+    oob.reset(options={"world": 0})
+    _, _, _, _, oob_info = oob.step(np.array([8.0, 2.0], dtype=np.float32))
+    assert oob.action_oob == 1 and ref.action_oob == 0
+    assert abs(oob_info["alpha"] - clipped_info["alpha"]) < 1e-9, (oob_info["alpha"], clipped_info["alpha"])
+    assert "action_out_of_bounds" in check_failed(
+        {**_accounting_checks(oob, oob_info), "steps_37": True}), "越界未被验收拦下"
+    print(f"  [PASS] 四臂共用可达集 ±{cap}/±{hi[1]}: {len(ARMS)} 臂 x {WORLDS} 世界 x 2 模式零越界; "
+          f"cap=8 的越界动作被裁剪并判为对照不成立")
+
+
 if __name__ == "__main__":
     tests = [
         test_fixed_ratio_arm_hits_configured_coverage,
@@ -188,6 +248,7 @@ if __name__ == "__main__":
         test_rule_arms_use_only_published_information,
         test_spot_dispatch_strength_is_hand_computable,
         test_all_arms_pass_accounting_checks,
+        test_arms_share_one_action_reachability,
         test_hierarchical_arm_trains_only_midlong,
     ]
     print("=== 四臂基准框架验收 (#40) ===")

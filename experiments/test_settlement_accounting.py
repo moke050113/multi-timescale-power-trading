@@ -233,6 +233,64 @@ def test_ledger_and_monthly_closure():
           f"手算成本 {hand:,.2f} = 系统成本 {se.get_total_cost():,.2f}")
 
 
+def test_public_api_rejects_misuse():
+    """公开结算 API 的时序/幂等/有限性守卫 (迭代 8.11, 审计 N03)。
+
+    正常 37 步主路径不会触发这些分支, 但接口是公共的: 误用必须**当场报错且不留下半笔账**,
+    而不是悄悄多收一次钱。
+    """
+    def fresh():
+        se = SettlementEngine(total_demand=Q, num_months=NUM_MONTHS)
+        se.settle_annual(0.8, PRICE)
+        return se
+
+    se = fresh()
+    se.settle_monthly(0.9, PRICE, 0)
+    _expect_error(lambda: se.settle_monthly(0.9, PRICE, 0), "同月重复月度签约")
+    se.settle_intraday(0.95, PRICE, 0)
+    _expect_error(lambda: se.settle_intraday(0.95, PRICE, 0), "同月重复月内签约")
+    prices24 = np.full(24, PRICE)
+    se.settle_spot(prices24, 0)
+    _expect_error(lambda: se.settle_spot(prices24, 0), "同月重复现货交割")
+    _expect_error(lambda: se.settle_monthly(0.9, PRICE, 0), "回退到已交割月")
+
+    skipped = fresh()
+    _expect_error(lambda: skipped.settle_monthly(0.9, PRICE, 2), "跳月签约")
+    _expect_error(lambda: fresh().settle_annual(0.8, float("nan")), "年度价 NaN")
+    _expect_error(lambda: fresh().settle_monthly(0.9, float("inf"), 0), "月度价 inf")
+
+    # 失败调用不得部分改账: 现货价长度错误时 actual_demand 必须保持原值
+    partial = fresh()
+    partial.settle_monthly(0.9, PRICE, 0)
+    before = partial.actual_demand.copy()
+    try:
+        partial.settle_spot(np.full(6, PRICE), 0, np.full(24, 3.0))
+        raise AssertionError("错误长度的现货价未被拒绝")
+    except AssertionError as exc:
+        assert "长度" in str(exc), exc
+    assert np.allclose(partial.actual_demand, before), "被拒绝的调用污染了 actual_demand"
+
+    # 台账对外必须是副本: 外部改动不能改写引擎内部账本
+    ledger = partial.get_ledger()
+    n0 = len(partial.contracts)
+    ledger.append({"stage": "fake"})
+    ledger[0]["cost"] = 9.9e9
+    assert len(partial.contracts) == n0, "get_ledger 返回了内部列表本身"
+    assert partial.contracts[0]["cost"] != 9.9e9, "外部改动写回了内部台账"
+
+
+def test_cvar_exact_fractional_tail():
+    """ES_η 用分数尾部而非插值均值 (迭代 8.11, 审计 N06)。"""
+    se = SettlementEngine(total_demand=Q, num_months=NUM_MONTHS)
+    got = se.compute_cvar([1.0, 2.0, 3.0, 4.0], eta=0.625)
+    # 尾部质量 0.375 × 4 = 1.5 个样本: 4 全计 + 3 计一半 → (4 + 0.5×3)/1.5 = 11/3
+    assert abs(got - 11.0 / 3.0) < 1e-9, got
+    # 同一批样本换个顺序必须给同一个 ES (只排序, 不依赖输入次序)
+    assert abs(se.compute_cvar([4.0, 1.0, 3.0, 2.0], eta=0.625) - got) < 1e-12, "ES 不应依赖输入顺序"
+    assert abs(se.compute_cvar([1.0, 4.0, 2.0, 3.0], eta=0.625) - got) < 1e-12
+    assert se.compute_cvar(list(range(1, 13)), eta=0.95) == 12.0, "12 个月样本的 95% 尾部应为最差点"
+
+
 if __name__ == "__main__":
     tests = [
         ("平价会计闭合", test_flat_price_exact),
@@ -243,6 +301,8 @@ if __name__ == "__main__":
         ("现货偏差跟随实际需求", test_spot_residual_tracks_actual_demand),
         ("过购折价回售不退款", test_surplus_is_discounted_not_refunded),
         ("非平价成本复算", test_price_sensitivity),
+        ("公开 API 防误用", test_public_api_rejects_misuse),
+        ("CVaR 精确分数尾部", test_cvar_exact_fractional_tail),
     ]
     failed = []
     for name, fn in tests:

@@ -26,6 +26,8 @@
     过购 (Δ_h < 0) 按该时段现货价 × (1 - sell_discount) 回售, 代表批零价差,
                    且绝不以退款形式冲销已签合同成本。
 """
+import copy
+
 import numpy as np
 from typing import Dict, Optional, Sequence
 
@@ -80,6 +82,9 @@ class SettlementEngine:
         # 合同台账: 每批合同一条记录 (数量/价格/签约序号/交割月)
         self.contracts = []
         self._contract_seq = 0
+        # 时序守卫: 交割月 → 已结算阶段; 已完成现货交割的月份数
+        self._stage_done = {}
+        self._delivered_before = 0
         # 逐月实际净需求 (设备执行结果), 由 settle_spot 写入
         self.actual_demand = np.zeros(self.num_months)
         self.last_spot_deviation = 0.0
@@ -117,12 +122,12 @@ class SettlementEngine:
 
     @property
     def history(self):
-        """兼容旧调用: 交易历史即合同台账。"""
-        return self.contracts
+        """兼容旧调用: 交易历史即合同台账 (同样返回副本)。"""
+        return self.get_ledger()
 
     def get_ledger(self) -> list:
-        """返回完整合同台账。"""
-        return self.contracts
+        """返回合同台账的**深拷贝**: 外部拿到的账本改动不了引擎内部状态。"""
+        return copy.deepcopy(self.contracts)
 
     def get_monthly_closure(self) -> Dict[int, Dict[str, float]]:
         """按交割月汇总电量, 用于验收 R_m 是否被完整覆盖、偏差是否等于实际净需求。"""
@@ -151,6 +156,7 @@ class SettlementEngine:
         """年度交易结算: 按 12 个交割月各成交 α·R_m, 全年只允许签约一次。"""
         assert 0 <= alpha <= 1, f"α 必须在 [0,1] 范围内, 当前: {alpha}"
         assert not self.annual_settled, "年度合同已签约, 同一回合不得重复计量年度电量"
+        self._finite(annual_price, "年度合同价")
 
         self.alpha = float(alpha)
         total_cost = 0.0
@@ -170,6 +176,8 @@ class SettlementEngine:
                        signed_step: Optional[int] = None) -> float:
         """月度交易结算: 本月新增 (β_m - α)·R_m。"""
         self._check_month(month_idx)
+        self._open_stage("monthly", month_idx)
+        self._finite(monthly_price, "月度合同价")
         assert self.alpha <= beta <= 1, f"需满足 α≤β≤1, 当前: α={self.alpha}, β={beta}"
 
         delta_beta = float(beta) - self.alpha
@@ -191,6 +199,8 @@ class SettlementEngine:
                         signed_step: Optional[int] = None) -> float:
         """月内交易结算: 本月新增 (γ_m - β_m)·R_m。"""
         self._check_month(month_idx)
+        self._open_stage("intraday", month_idx, requires=("monthly",))
+        self._finite(intraday_price, "月内合同价")
         assert self.beta <= gamma <= 1, f"需满足 β≤γ≤1, 当前: β={self.beta}, γ={gamma}"
 
         delta_gamma = float(gamma) - self.beta
@@ -226,24 +236,27 @@ class SettlementEngine:
             ΔE_h < 0 → 按该时段现货价 × (1 - sell_discount) 回售 (负成本=收入)
         """
         self._check_month(month_idx)
+        self._open_stage("spot", month_idx, requires=("monthly",))
         hours = self.hours_per_day()
         ref = self.reference_energy(month_idx)
         contract_energy = self.gamma * ref
 
+        # 先把所有输入校验完再动账: 旧写法在价格长度断言之前就已写入 actual_demand,
+        # 一次失败的调用会留下半个月的账 (部分提交)。
+        prices = self._finite(spot_prices, "现货价格剖面")
+        assert prices.shape == (hours,), f"现货价格长度须为 {hours}, 当前 {prices.shape}"
         if demand_hourly is None:
             demand = np.full(hours, ref / hours)
         else:
-            demand = np.asarray(demand_hourly, dtype=float)
+            demand = self._finite(demand_hourly, "逐时段网侧电量")
             assert demand.shape == (hours,), f"demand_hourly 长度须为 {hours}, 当前 {demand.shape}"
             assert np.all(demand >= -1e-9), f"网侧净需求不得为负: min={demand.min():.6f}"
 
         actual_energy = float(demand.sum())
         assert actual_energy > 1e-12, "本月实际净需求为 0, 无法结算偏差"
-        self.actual_demand[month_idx] = actual_energy
 
+        self.actual_demand[month_idx] = actual_energy
         deviation = demand * (1.0 - contract_energy / actual_energy)
-        prices = np.asarray(spot_prices, dtype=float)
-        assert prices.shape == (hours,), f"现货价格长度须为 {hours}, 当前 {prices.shape}"
 
         buy_qty = np.maximum(deviation, 0.0)
         sell_qty = np.minimum(deviation, 0.0)
@@ -264,6 +277,8 @@ class SettlementEngine:
                      buy_energy=float(buy_qty.sum()),
                      sell_energy=float(-sell_qty.sum()),
                      sell_discount=self.sell_discount)
+        # 本月交割完成: 市场游标前移, 之后任何回到本月的补签都会被 _check_month 拒绝
+        self._delivered_before = int(month_idx) + 1
         return cost
 
     def _check_month(self, month_idx: int):
@@ -271,6 +286,27 @@ class SettlementEngine:
         assert 0 <= month_idx < self.num_months, (
             f"month_idx 越界: {month_idx}, 有效范围 0~{self.num_months - 1}"
         )
+        assert month_idx == self._delivered_before, (
+            f"市场按交割月顺序开市: 当前只能交易交割月 {self._delivered_before}, "
+            f"收到 {month_idx} (跳月或回退到已交割月都会被拒绝)"
+        )
+
+    def _open_stage(self, stage: str, month_idx: int, requires=()):
+        """公开 API 的幂等 + 前置阶段守卫 (在任何状态写入之前调用)。"""
+        done = self._stage_done.setdefault(int(month_idx), set())
+        assert stage not in done, (
+            f"交割月 {month_idx} 的 {stage} 已结算, 拒绝同月重复计量"
+        )
+        for req in requires:
+            assert req in done, f"交割月 {month_idx} 结算 {stage} 前必须先完成 {req}"
+        done.add(stage)
+
+    @staticmethod
+    def _finite(value, name: str):
+        """价格/电量必须是有限实数: NaN/inf 会污染整本台账 (且无法手算核对)。"""
+        arr = np.asarray(value, dtype=float)
+        assert np.all(np.isfinite(arr)), f"{name} 含 NaN/inf: {value}"
+        return arr
 
     @staticmethod
     def hours_per_day():
@@ -313,18 +349,27 @@ class SettlementEngine:
 
     def compute_cvar(self, spot_costs: list, eta: float = 0.95) -> float:
         """
-        计算条件风险价值 (CVaR)。
+        经验分布上的期望短缺 ES_η (尾部样本按分数权重计入)。
 
         Args:
-            spot_costs: 各月现货成本列表
+            spot_costs: 各月现货成本列表 (元)
             eta: 置信水平 (默认 0.95)
 
-        Returns:
-            CVaR 值
+        迭代 8.11 前的写法是"np.percentile 线性插值取 VaR, 再对 cost ≥ VaR 的样本求均值"。
+        它在离散样本上偏小: [1,2,3,4] 与 η=0.625 给 3.5, 而尾部质量 0.375 对应
+        1.5 个样本 (4 全计 + 3 计一半) → 精确 ES = (4 + 0.5×3)/1.5 = 11/3 ≈ 3.667。
+        这里按 (1-η)·n 个样本、边界样本取分数权重, 结果可手算核对。
+
+        注意样本单元: 传入的是**同一回合内 12 个相互相关的月成本**, 不是 12 个独立年度。
         """
-        if len(spot_costs) < 2:
+        costs = np.sort(np.asarray(spot_costs, dtype=float))[::-1]   # 降序: 最贵(最差)在前
+        n = int(costs.size)
+        if n == 0:
             return 0.0
-        costs = np.array(spot_costs)
-        var = np.percentile(costs, eta * 100)
-        cvar = costs[costs >= var].mean() if np.any(costs >= var) else var
-        return float(cvar)
+        if n < 2 or not (0.0 < eta < 1.0):
+            return float(costs[0])
+        k = (1.0 - float(eta)) * n          # 尾部样本数 (可为分数)
+        full = int(np.floor(k))
+        frac = k - full
+        total = float(costs[:full].sum()) + frac * float(costs[full])
+        return float(total / k)
