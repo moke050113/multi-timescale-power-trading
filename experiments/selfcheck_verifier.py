@@ -58,6 +58,9 @@ MUTATIONS = [
      lambda t: t.replace("+0.26% (24/30)", "+0.96% (24/30)")),
     ("README 消融表补写一个没跑过的组合", "README",
      lambda t: t.replace("| 三阶段交替训练 | — |", "| 三阶段交替训练 | +0.05% (22/30) |")),
+    ("代码行号引用漂到另一段 (行号仍有效, 但那段没有 CVaR)", "报告",
+     lambda t: t.replace("src/market/environment.py:354-359", "src/market/environment.py:120-125")),
+    ("5.2 验收用例数 58 → 57", "报告", lambda t: t.replace("58 个用例", "57 个用例")),
 ]
 
 
@@ -104,6 +107,33 @@ def _drop_lock(payload):
     return payload
 
 
+def _let_actions_go_out_of_bounds(payload):
+    """审计 N02 声称"四臂动作都不越界": 把一次越界藏进 checks, 必须被拒。"""
+    worlds(payload)[7]["checks"]["action_oob"] = 1
+    return payload
+
+
+def _forge_phase_history(payload):
+    """把某个 dual_sac 组合的训练日程改成全程联合 —— 与"三阶段"记录矛盾。"""
+    r = next(x for x in payload["runs"] if x["arm"] == "dual_sac" and x.get("trained"))
+    r["phase_history"] = [{"phase": "P-joint", "episodes": 2000,
+                           "freeze_midlong": False, "freeze_spot": False}]
+    return payload
+
+
+def _drop_grad_steps(payload):
+    """删掉逐角色优化器步数: 5.9 关于"交替确实改变了更新次数"的主张就没有数据来源。"""
+    r = next(x for x in payload["runs"] if x["arm"] == "dual_sac" and x.get("trained"))
+    r["grad_steps"] = {}
+    return r
+
+
+def _switch_says_ablated(payload):
+    """主基准的 meta.ablation 里出现关闭项: 参照就不再是"三部件全开"。"""
+    payload["meta"]["ablation"]["alternating"] = False
+    return payload
+
+
 DATA_MUTATIONS = [
     ("惩罚退回单个代表日口径 (作废算法的特征)", _penalty_back_to_day_scale),
     ("转移电量按代表日落档 (单价自洽但尺度错)", _energy_back_to_day_scale),
@@ -112,6 +142,10 @@ DATA_MUTATIONS = [
     ("某世界年成交电量偏 0.1%, 不再闭合于 Q", _break_energy_closure),
     ("源锁里 settlement.py 的哈希被改", _forge_lock_hash),
     ("整段源锁被删掉, 数字无法追溯代码版本", _drop_lock),
+    ("把一次动作越界藏进 checks (可达集主张)", _let_actions_go_out_of_bounds),
+    ("dual_sac 的训练日程被改写成全程联合", _forge_phase_history),
+    ("删掉逐角色优化器步数记录", _drop_grad_steps),
+    ("主基准 meta.ablation 出现关闭项", _switch_says_ablated),
 ]
 
 

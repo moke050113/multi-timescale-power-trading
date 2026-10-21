@@ -127,6 +127,47 @@ def nums(cell: str) -> list:
     return [float(x) for x in re.findall(r"[+-]?\d+(?:\.\d+)?", s)]
 
 
+# 正文引用的代码行号: 改代码就会让"某某机制见 file:NN-MM"变成假证据 (审计 N07)。
+# 除了检查行号还在文件范围内, 还要求那段里出现关键字 —— 只查范围挡不住"行号有效但指错了地方"。
+CITATION_KEYS = {
+    "src/market/environment.py:354-359": "compute_cvar",
+    "src/market/environment.py:441-443": "pub_monthly",
+    "src/utils/config.py:15": "annual",
+    "experiments/run_four_arm_benchmark.py:378-383": "--no-alternating",
+}
+CITE_RE = re.compile(r"(src/[a-z_/]+\.py|experiments/[a-z_/]+\.py):(\d+)(?:-(\d+))?")
+
+
+def check_doc_only(c: "Checker", md: str) -> None:
+    """与 JSON 无关、只靠当前仓库就能判真伪的正文主张。"""
+    for path, start, end in CITE_RE.findall(md):
+        start, end = int(start), int(end or start)
+        c.n += 1
+        if not os.path.exists(path):
+            c.bad += 1
+            print(f"  [XX] 引用 {path}:{start}-{end}: 文件不存在")
+            continue
+        lines = open(path, encoding="utf-8").read().splitlines()
+        key = CITATION_KEYS.get(f"{path}:{start}-{end}", "")
+        body = "\n".join(lines[start - 1:end])
+        if not (0 < start <= end <= len(lines)) or not body.strip():
+            c.bad += 1
+            print(f"  [XX] 引用 {path}:{start}-{end}: 行号越界或内容为空 (文件共 {len(lines)} 行)")
+        elif key and key not in body:
+            c.bad += 1
+            print(f"  [XX] 引用 {path}:{start}-{end}: 那段里找不到 {key!r}, 引用已随代码漂移")
+    c.plain("每条带行号的引用都被上面逐条检查过", len(CITE_RE.findall(md)) >= len(CITATION_KEYS),
+            f"正文只找到 {len(CITE_RE.findall(md))} 处行号引用")
+
+    n_cases = sum(len(re.findall(r"^def test_", open(p, encoding="utf-8").read(), re.M))
+                  for p in sorted(glob.glob("experiments/test_*.py")))
+    c.value("5.2 验收用例总数 = 各 test 文件里的 def test_ 之和", float(n_cases), n_cases,
+            f"{n_cases} 个用例", 0)
+
+    left = sorted(set(re.findall(r"<[A-Z0-9_]{2,}>", md)))
+    c.plain("正文没有未填的占位符", not left, f"还剩 {left}")
+
+
 def md_row(md: str, part: str, arm: str) -> list:
     """表 5.9-1 里 (剔除部件, 臂) 那一行的单元格; 没有该行返回空列表。"""
     pre = f"| {part} | `{arm}` |"
@@ -134,21 +175,6 @@ def md_row(md: str, part: str, arm: str) -> list:
         if line.startswith(pre):
             return [x.strip() for x in line.strip().strip("|").split("|")]
     return []
-
-
-def phase_counts(path: str) -> dict:
-    """按 "消融开关" 行分段统计训练阶段标记行数; 主基准日志没有开关行, 归入 "完整方法"。"""
-    out, cur = {}, "完整方法"
-    for line in open(path, encoding="utf-8", errors="replace"):
-        m = re.search(r"消融开关 .*?: (\[.*?\])", line)
-        if m:
-            cur = m.group(1)
-            out.setdefault(cur, {})
-            continue
-        for t in re.findall(r"\[(P[A-Za-z0-9_-]+)\]", line):
-            d = out.setdefault(cur, {})
-            d[t] = d.get(t, 0) + 1
-    return out
 
 
 def main() -> int:
@@ -264,6 +290,37 @@ def main() -> int:
                if len({w["world"] for w in r["worlds"]}) != len(r["worlds"])
                or not {w["world"] for w in r["worlds"]} <= set(range(ew))]
     c.plain(f"每个组合的世界编号互不重复且都在 0~{ew - 1}", not bad_ids, str(bad_ids[:4]))
+
+    # 动作可达集 (审计 N02): 正文声称"四臂动作都不越界", 数据里必须有这个计数且为 0
+    have_oob = [wch for wch in chk if "action_oob" in wch]
+    c.plain("逐世界验收里带 action_oob 计数", len(have_oob) == len(chk),
+            f"{len(have_oob)}/{len(chk)} 个世界有该字段 —— 缺字段的 JSON 出自旧驱动, 需重跑")
+    n_oob = sum(int(wch["action_oob"]) for wch in have_oob)
+    c.plain("全部世界的越界动作数为 0", len(have_oob) == len(chk) and n_oob == 0,
+            f"{n_oob} 次越界 —— 规则臂或 SAC 输出超出了 ACTION_BOUNDS 声明的可达集")
+    c.text("4.1 动作可达集写法", "checks.action_oob")
+    c.text("3.2 惩罚月度尺度写法", "days\\_per\\_month")
+
+    # 训练侧留痕 (审计 N05/N09): 每个 SAC 臂必须记下逐角色优化器步数与阶段日程
+    sac_runs = [r for r in data["runs"] if r.get("trained")]
+    gs = [r.get("grad_steps") or {} for r in sac_runs]
+    c.plain("每个已训练组合都带 grad_steps", len(sac_runs) == 30 and all(g for g in gs),
+            f"{len(sac_runs)} 个已训练组合, 其中有步数的 {sum(1 for g in gs if g)} 个")
+    c.plain("中长期网络确实被更新过", bool(gs) and all(int(g.get("midlong", 0)) > 0 for g in gs),
+            "存在 midlong=0 的训练组合")
+    c.plain("分层臂不更新柔性网络",
+            all(int(r.get("grad_steps", {}).get("spot", 0)) == 0
+                for r in sac_runs if r["arm"] == "sac_rule"))
+    ph = {r["arm"]: [q["phase"] for q in r.get("phase_history") or []] for r in sac_runs}
+    c.plain("dual_sac 走三阶段、sac_rule 只训中长期",
+            bool(ph) and all(v == ["P1-midlong", "P2-spot", "P3-joint"] for k, v in ph.items()
+                             if k == "dual_sac")
+            and all(v == ["P-midlong"] for k, v in ph.items() if k == "sac_rule"),
+            str({k: v for k, v in ph.items()}))
+    ab = data["meta"].get("ablation")
+    c.plain("主基准 meta.ablation 三项全开",
+            ab == {"exposure_shaping": True, "scale_spot_reward": True, "alternating": True},
+            f"实测 {ab}")
 
     def costs(scn, arm):
         return float(np.mean([r["mean_cost"] for r in by_key[(scn, arm)]]))
@@ -395,9 +452,11 @@ def main() -> int:
         print(f"  [XX] 消融分片 {len(parts)} 个, 报告写了 {len(ABL_ROWS)} 个部件: {parts}")
         return 1
     re_abl, worlds_of, n_worlds, n_fail = {}, {}, 0, 0
+    abl_data = {}
     for p in parts:
         v = os.path.basename(p)[len("ablation_"):-len(".json")]
         d = load(p)
+        abl_data[v] = d
         part_lock = check_lock(d["meta"], p)
         c.n += 1
         if json_lock.get("files") and part_lock.get("files") != json_lock["files"]:
@@ -419,6 +478,12 @@ def main() -> int:
         worlds_of[v] = sum(len(r["worlds"]) for r in d["runs"])
         n_worlds += worlds_of[v]
         n_fail += len(d["failures"])
+        pc = [w["checks"] for r in d["runs"] for w in r["worlds"] if "action_oob" in w["checks"]]
+        c.plain(f"消融 {v}: 变体逐世界也带越界动作计数", len(pc) == worlds_of[v],
+                f"{len(pc)}/{worlds_of[v]} 个世界有该字段")
+        c.plain(f"消融 {v}: 变体的动作同样不越界 (可达集与完整方法一致才可比)",
+                len(pc) == worlds_of[v] and sum(int(x["action_oob"]) for x in pc) == 0,
+                f"{sum(int(x['action_oob']) for x in pc)} 次越界")
 
     def seeds_of(a):
         return [s["delta_pct"] for s in sorted(a["seeds"], key=lambda z: z["seed"])]
@@ -543,29 +608,44 @@ def main() -> int:
     c.value("5.9 结论三: 另两项 Δ<门槛且逐种子符号不一致", float(ok3), 1.0,
             "逐种子符号不一致", 0)
 
-    # 局限 4 的三条证据: 驱动脚本无 --no-* / 开关默认取反 / 主基准 JSON 里确实没有该字段
+    # 局限 4 的三条证据: 驱动脚本无 --no-* / 开关默认取反 / 主基准 JSON 自己写着三部件全开
     sh_txt = open("experiments/run_all_scenarios.sh", encoding="utf-8").read()
     c.value("5.9 局限4: 主基准调用不含任何 --no-* 开关", float("--no-" not in sh_txt), 1.0,
             "不含任何 `--no-*` 开关", 0)
     drv = open("experiments/run_four_arm_benchmark.py", encoding="utf-8").read()
     c.value("5.9 局限4: 驱动把三项消融开关默认置为开启",
             float(len(re.findall(r"not args\.no_(?:exposure_shaping|spot_reward_scale|alternating)",
-                                 drv))), 3, "三项开关默认开启", 0)
-    c.value("5.9 局限4: 主基准 JSON 无 meta.ablation 字段",
-            float("ablation" not in base_meta), 1.0,
-            "主基准分片产生于 `meta.ablation` 字段加入之前", 0)
+                                 drv))), 3, "三项开关默认置为开启", 0)
+    c.value("5.9 局限4: 主基准 JSON 自带三部件全开的开关记录",
+            float(base_meta.get("ablation") == {"exposure_shaping": True,
+                                                "scale_spot_reward": True,
+                                                "alternating": True}), 1.0,
+            "三部件全开", 0)
 
-    # 交替训练确实被改掉的旁证: 主基准日志有 P1/P2/P3, 该变体只有 P-joint (日志未入库, 有则检)
-    full_log, abl_log = "results/logs/four_arm_full.log", "results/logs/ablation.log"
-    if os.path.exists(full_log) and os.path.exists(abl_log):
-        cnt = [phase_counts(full_log)["完整方法"].get(t, 0)
-               for t in ("P1-midlong", "P2-spot", "P3-joint")]
-        c.text("5.9 结论三: 完整方法三阶段标记行数", "/".join(map(str, cnt)) + " 行")
-        only_joint = set(phase_counts(abl_log).get("['alternating']", {})) == {"P-joint"}
-        c.value("5.9 结论三: no_alternating 只有 [P-joint] 阶段", float(only_joint), 1.0,
-                "该变体只有单一 `[P-joint]` 标记", 0)
-    elif args.verbose:
-        print("  (训练日志不在仓库里, 跳过阶段标记旁证)")
+    # 交替训练确实改变了训练日程: 不再靠训练日志, 直接读分片里的 phase_history 与 grad_steps
+    al_part = abl_data.get("no_alternating", {})
+    al_ph = [[q["phase"] for q in r.get("phase_history") or []] for r in al_part.get("runs", [])
+             if r.get("trained")]
+    c.plain("no_alternating 的每个 SAC 组合只有一步 [P-joint] 阶段",
+            bool(al_ph) and all(x == ["P-joint"] for x in al_ph),
+            f"实测日程集合 {sorted({tuple(x) for x in al_ph})}")
+    full_ph = [[q["phase"] for q in r.get("phase_history") or []] for r in data["runs"]
+               if r.get("trained") and r["arm"] == "dual_sac"]
+    c.plain("主基准 dual_sac 走 P1/P2/P3 三阶段",
+            bool(full_ph) and all(x == ["P1-midlong", "P2-spot", "P3-joint"] for x in full_ph),
+            f"{len(full_ph)} 个组合, 首个 {full_ph[:1]}")
+    g4 = [al.get(k) for k in ("grad_midlong", "grad_spot", "grad_midlong_ref", "grad_spot_ref")]
+    fresh = all(isinstance(x, int) and x > 0 for x in g4)
+    c.plain("5.9 交替变体的逐角色优化器步数可从 JSON 复算", fresh,
+            f"实测 {g4} —— 全为 0/缺失说明消融分片出自旧驱动, 需按当前代码重跑")
+    if fresh:
+        c.text("5.9 交替变体逐角色步数",
+               f"完整方法 中长期 {g4[2]:.0f} 次 / 柔性 {g4[3]:.0f} 次，"
+               f"关掉交替 {g4[0]:.0f} 次 / {g4[1]:.0f} 次")
+        c.plain("关掉交替后逐角色步数确实变了 (不是只改名字的零结果)",
+                g4[0] != g4[2] or g4[1] != g4[3],
+                f"完整 {g4[2]}/{g4[3]}, 变体 {g4[0]}/{g4[1]}")
+    check_doc_only(c, md)
     if args.verbose:
         print(f"  5.9 重算 Δ: 塑形 {sh[0]['delta_pct']:.3f}%/{sh[1]['delta_pct']:.3f}%, "
               f"奖励放大 {sp[0]['delta_pct']:.3f}%/{sp[1]['delta_pct']:.3f}%, "

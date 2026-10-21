@@ -50,21 +50,29 @@ def _pkg_version(name: str):
 
 def _git(root: str, *args):
     try:
-        out = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True,
-                             check=True).stdout.strip()
+        # 显式按 UTF-8 解码: Windows 上 text=True 会用本地 GBK, 遇到中文路径 (如 report/课程设计报告.md)
+        # 会在读取线程里抛 UnicodeDecodeError, 于是脏文件清单被静默吞成空 —— 源锁就漏记改动。
+        out = subprocess.run(["git", *args], cwd=root, capture_output=True,
+                             encoding="utf-8", errors="replace", check=True).stdout.strip()
         return out
     except Exception:
         return None
 
 
 def _changed_paths(root: str):
-    """工作树相对 HEAD 的改动 (含未跟踪), 不解析 porcelain 列宽, 避免格式/换行过滤器差异。"""
-    out = set()
+    """工作树相对 HEAD 的改动 (含未跟踪), 不解析 porcelain 列宽, 避免格式/换行过滤器差异。
+
+    返回 None 表示 git 问不通 —— 与"问过、确实干净"是两件事, 不能都记成干净。
+    """
+    out, failed = set(), False
+    # -c core.quotePath=false: 否则中文路径被转成 "\350\257\276..." 八进制串, 记录没法读
     for cmd in (("diff", "--name-only", "HEAD"), ("ls-files", "--others", "--exclude-standard")):
-        text = _git(root, *cmd)
-        if text:
+        text = _git(root, "-c", "core.quotePath=false", *cmd)
+        if text is None:
+            failed = True
+        else:
             out.update(line for line in text.splitlines() if line)
-    return sorted(out)
+    return None if failed else sorted(out)
 
 
 def source_lock(root: str = None) -> dict:
@@ -76,9 +84,10 @@ def source_lock(root: str = None) -> dict:
         path = os.path.join(root, *rel.split("/"))
         files[rel] = _file_sha256(path) if os.path.isfile(path) else "MISSING"
     changed = _changed_paths(root)
+    head = _git(root, "rev-parse", "HEAD")
     lock = {
-        "git_commit": _git(root, "rev-parse", "HEAD"),
-        "git_dirty": bool(changed) if _git(root, "rev-parse", "HEAD") else None,
+        "git_commit": head,
+        "git_dirty": bool(changed) if (head and changed is not None) else None,
         "git_dirty_paths": changed,
         "python": sys.version.split()[0],
         "numpy": _pkg_version("numpy"),
