@@ -138,7 +138,7 @@ CITATION_KEYS = {
 CITE_RE = re.compile(r"(src/[a-z_/]+\.py|experiments/[a-z_/]+\.py):(\d+)(?:-(\d+))?")
 
 
-def check_doc_only(c: "Checker", md: str) -> None:
+def check_doc_only(c: "Checker", md: str, readme_path: str) -> None:
     """与 JSON 无关、只靠当前仓库就能判真伪的正文主张。"""
     for path, start, end in CITE_RE.findall(md):
         start, end = int(start), int(end or start)
@@ -161,8 +161,15 @@ def check_doc_only(c: "Checker", md: str) -> None:
 
     n_cases = sum(len(re.findall(r"^def test_", open(p, encoding="utf-8").read(), re.M))
                   for p in sorted(glob.glob("experiments/test_*.py")))
-    c.value("5.2 验收用例总数 = 各 test 文件里的 def test_ 之和", float(n_cases), n_cases,
-            f"{n_cases} 个用例", 0)
+    token = f"{n_cases} 个验收用例"
+    c.value("5.2 验收用例总数 = 各 test 文件里的 def test_ 之和", float(n_cases), n_cases, token, 0)
+    # README 复述同一个用例数; 它不在或数字脱钩都算不符 (审计 N07: 缺文档不能"通过")
+    readme_txt = (open(readme_path, encoding="utf-8").read()
+                  if os.path.exists(readme_path) else "")
+    c.n += 1
+    if token not in readme_txt:
+        c.bad += 1
+        print(f"  [XX] README 的用例数: 应写着 {token!r}, 实际找不到 (或 README 不在 {readme_path})")
 
     left = sorted(set(re.findall(r"<[A-Z0-9_]{2,}>", md)))
     c.plain("正文没有未填的占位符", not left, f"还剩 {left}")
@@ -645,7 +652,15 @@ def main() -> int:
         c.plain("关掉交替后逐角色步数确实变了 (不是只改名字的零结果)",
                 g4[0] != g4[2] or g4[1] != g4[3],
                 f"完整 {g4[2]}/{g4[3]}, 变体 {g4[0]}/{g4[1]}")
-    check_doc_only(c, md)
+    check_doc_only(c, md, args.readme)
+    # README 复述了"这次审计共检查多少项主张": 这个数字只能由审计器自己说了算 (审计 N07)
+    token = f"{c.n + 1} 项主张"          # 本条自身也算一项, 与结尾打印的总数对齐
+    c.n += 1
+    txt = (open(args.readme, encoding="utf-8").read().replace("\u2212", "-")
+           if os.path.exists(args.readme) else "")
+    if token not in txt:
+        c.bad += 1
+        print(f"  [XX] README 的检查项数: 应写着 {token!r}, 实际找不到")
     if args.verbose:
         print(f"  5.9 重算 Δ: 塑形 {sh[0]['delta_pct']:.3f}%/{sh[1]['delta_pct']:.3f}%, "
               f"奖励放大 {sp[0]['delta_pct']:.3f}%/{sp[1]['delta_pct']:.3f}%, "

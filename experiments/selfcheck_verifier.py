@@ -60,7 +60,9 @@ MUTATIONS = [
      lambda t: t.replace("| 三阶段交替训练 | — |", "| 三阶段交替训练 | +0.05% (22/30) |")),
     ("代码行号引用漂到另一段 (行号仍有效, 但那段没有 CVaR)", "报告",
      lambda t: t.replace("src/market/environment.py:354-359", "src/market/environment.py:120-125")),
-    ("5.2 验收用例数 58 → 57", "报告", lambda t: t.replace("58 个用例", "57 个用例")),
+    ("5.2 验收用例数 58 → 57", "报告", lambda t: t.replace("58 个验收用例", "57 个验收用例")),
+    ("README 的用例数与 test 文件脱钩 58 → 60", "README",
+     lambda t: t.replace("58 个验收用例", "60 个验收用例")),
 ]
 
 
