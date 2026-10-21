@@ -118,7 +118,7 @@ Qoder_project/
 │   ├── 课程设计报告.md
 │   ├── 课程设计报告.pdf
 │   └── figures/           # four_arm_*.png, 由 plot_four_arm_results.py 生成
-├── results/               # 实验结果 (four_arm_benchmark.json 入库; models/ 不入库)
+├── results/               # 实验结果 (合并结果 + parts/ 逐世界分片入库; models/ 与日志不入库)
 ├── progress.md            # 项目进展记录 (含迭代 8 修复明细)
 ├── 项目完成度评估报告.md    # 任务书对照 + 结论撤回声明
 └── requirements.txt       # 依赖包
@@ -330,7 +330,14 @@ PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py \
 ```
 
 生成 5 张图（配对改进 / 学习臂 vs 强规则 / 逐世界配对散点 / 成本分层 / $\gamma_m$ 剖面），
-随仓库发布在 `report/figures/`，报告正文按相对路径引用；`results/parts/` 与模型权重不入库。
+随仓库发布在 `report/figures/`，报告正文按相对路径引用。
+
+**交付范围与可复算边界**：`results/four_arm_benchmark.json`、`results/parts/*.json`（逐场景/逐消融变体的
+逐世界原始记录，5.4 与 5.9 的每个数都由它们当场重算）与 `results/ablation_summary.json` **入库**；
+模型权重（`results/models/`，约 90 个 `.pt`）与训练日志**不入库**——体积大且不影响任何一张表的可复算性。
+每个结果 JSON 的 `meta.source_lock` 记录 12 个决定数值的源代码文件哈希、git 提交号与
+python/numpy/torch 版本，所以"这个数出自哪一份代码"由文件自身回答；要复现权重本身，
+按上面的正式入口在同一份代码上重跑对应组合即可（同 seed 跨进程的训练侧波动见报告 5.4 的判读门槛）。
 
 ## 📝 项目进展
 
