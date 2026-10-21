@@ -1,0 +1,717 @@
+{
+  "meta": {
+    "ref": "results/parts/four_arm_A.json",
+    "rep": [
+      "results/parts/repeat_four_arm_A.json",
+      "results/parts/repeat_rule_A.json"
+    ],
+    "ref_source_lock": {
+      "git_commit": "0e770c25a8b23f0faa3f3ca74025438ab917c865",
+      "git_dirty": false,
+      "git_dirty_paths": [],
+      "python": "3.11.17",
+      "numpy": "2.4.6",
+      "torch": "2.14.1+cpu",
+      "files": {
+        "src/utils/config.py": "567d8297106c188c",
+        "src/market/environment.py": "546bc98201afc018",
+        "src/market/settlement.py": "e393e820fadb68c5",
+        "src/market/market_models.py": "f2a04cffbce43d7e",
+        "src/load/flexible_executor.py": "74c1342b03cac120",
+        "src/load/industrial_load.py": "ae6f11d6eb5f407b",
+        "src/load/ev_model.py": "458c9078ca197447",
+        "src/load/load_scenarios.py": "8f0145ae446a3631",
+        "src/agent/sac_agent.py": "4a7c2f0b1a5fbfdf",
+        "src/agent/multi_agent.py": "60036d6f22bcc1b8",
+        "src/agent/rule_policies.py": "1ff0ac30309baf98",
+        "experiments/run_four_arm_benchmark.py": "d3ef7ff120c0030e"
+      }
+    },
+    "rep_source_lock": {
+      "results/parts/repeat_four_arm_A.json": {
+        "git_commit": "ecc6d2aa3e49901fdef0364b7fe2eea434c0adb1",
+        "git_dirty": true,
+        "git_dirty_paths": [
+          "experiments/verify_report_numbers.py",
+          "report/figures/four_arm_cost_breakdown.png",
+          "report/figures/four_arm_gamma_profile.png",
+          "report/figures/four_arm_improvement.png",
+          "report/figures/four_arm_paired_worlds.png",
+          "report/figures/four_arm_vs_strong_rule.png",
+          "results/ablation_summary.json",
+          "results/four_arm_benchmark.json",
+          "results/parts/ablation_no_alternating.json",
+          "results/parts/ablation_no_exposure_shaping.json",
+          "results/parts/ablation_no_spot_reward_scale.json",
+          "results/parts/four_arm_A.json",
+          "results/parts/four_arm_B.json",
+          "results/parts/four_arm_C.json",
+          "results/parts/four_arm_D.json",
+          "results/parts/four_arm_E.json"
+        ],
+        "python": "3.11.17",
+        "numpy": "2.4.6",
+        "torch": "2.14.1+cpu",
+        "files": {
+          "src/utils/config.py": "567d8297106c188c",
+          "src/market/environment.py": "546bc98201afc018",
+          "src/market/settlement.py": "e393e820fadb68c5",
+          "src/market/market_models.py": "f2a04cffbce43d7e",
+          "src/load/flexible_executor.py": "74c1342b03cac120",
+          "src/load/industrial_load.py": "ae6f11d6eb5f407b",
+          "src/load/ev_model.py": "458c9078ca197447",
+          "src/load/load_scenarios.py": "8f0145ae446a3631",
+          "src/agent/sac_agent.py": "4a7c2f0b1a5fbfdf",
+          "src/agent/multi_agent.py": "60036d6f22bcc1b8",
+          "src/agent/rule_policies.py": "1ff0ac30309baf98",
+          "experiments/run_four_arm_benchmark.py": "d3ef7ff120c0030e"
+        }
+      },
+      "results/parts/repeat_rule_A.json": {
+        "git_commit": "ecc6d2aa3e49901fdef0364b7fe2eea434c0adb1",
+        "git_dirty": true,
+        "git_dirty_paths": [
+          "README.md",
+          "experiments/compare_repeat_run.py",
+          "experiments/selfcheck_verifier.py",
+          "experiments/verify_report_numbers.py",
+          "progress.md",
+          "report/figures/four_arm_cost_breakdown.png",
+          "report/figures/four_arm_gamma_profile.png",
+          "report/figures/four_arm_improvement.png",
+          "report/figures/four_arm_paired_worlds.png",
+          "report/figures/four_arm_vs_strong_rule.png",
+          "report/课程设计报告.md",
+          "results/ablation_summary.json",
+          "results/four_arm_benchmark.json",
+          "results/parts/ablation_no_alternating.json",
+          "results/parts/ablation_no_exposure_shaping.json",
+          "results/parts/ablation_no_spot_reward_scale.json",
+          "results/parts/four_arm_A.json",
+          "results/parts/four_arm_B.json",
+          "results/parts/four_arm_C.json",
+          "results/parts/four_arm_D.json",
+          "results/parts/four_arm_E.json",
+          "results/parts/repeat_four_arm_A.json",
+          "项目完成度评估报告.md"
+        ],
+        "python": "3.11.17",
+        "numpy": "2.4.6",
+        "torch": "2.14.1+cpu",
+        "files": {
+          "src/utils/config.py": "567d8297106c188c",
+          "src/market/environment.py": "546bc98201afc018",
+          "src/market/settlement.py": "e393e820fadb68c5",
+          "src/market/market_models.py": "f2a04cffbce43d7e",
+          "src/load/flexible_executor.py": "74c1342b03cac120",
+          "src/load/industrial_load.py": "ae6f11d6eb5f407b",
+          "src/load/ev_model.py": "458c9078ca197447",
+          "src/load/load_scenarios.py": "8f0145ae446a3631",
+          "src/agent/sac_agent.py": "4a7c2f0b1a5fbfdf",
+          "src/agent/multi_agent.py": "60036d6f22bcc1b8",
+          "src/agent/rule_policies.py": "1ff0ac30309baf98",
+          "experiments/run_four_arm_benchmark.py": "d3ef7ff120c0030e"
+        }
+      }
+    },
+    "scenario": [
+      "A_年度低价后期上涨"
+    ],
+    "seeds": [
+      42,
+      142,
+      242
+    ],
+    "episodes_per_sac_arm": 2000,
+    "eval_worlds": 10,
+    "learner_paired_worlds": 60,
+    "rule_paired_worlds": 60,
+    "note": "同一份代码、同 seed、同配对世界, 只换一次进程启动的两次独立训练的逐世界成本差"
+  },
+  "learner_runs": [
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "ref_cost": 309392.5977105804,
+      "rep_cost": 309392.5977105804,
+      "delta_pct": 0.0,
+      "ref_gamma": 0.9774961659046815,
+      "rep_gamma": 0.9774961659046815
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "ref_cost": 310280.8539984886,
+      "rep_cost": 310280.8539984886,
+      "delta_pct": 0.0,
+      "ref_gamma": 0.9674203353146706,
+      "rep_gamma": 0.9674203353146706
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "ref_cost": 309200.9456058214,
+      "rep_cost": 309200.9456058214,
+      "delta_pct": 0.0,
+      "ref_gamma": 0.9755854432582012,
+      "rep_gamma": 0.9755854432582012
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "ref_cost": 310034.47268256504,
+      "rep_cost": 310034.47268256504,
+      "delta_pct": 0.0,
+      "ref_gamma": 0.9719754653597888,
+      "rep_gamma": 0.9719754653597888
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "ref_cost": 309831.92587990395,
+      "rep_cost": 309831.92587990395,
+      "delta_pct": 0.0,
+      "ref_gamma": 0.9358847725938105,
+      "rep_gamma": 0.9358847725938105
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "ref_cost": 310312.87118430116,
+      "rep_cost": 310312.87118430116,
+      "delta_pct": 0.0,
+      "ref_gamma": 0.9746821417584878,
+      "rep_gamma": 0.9746821417584878
+    }
+  ],
+  "paired_worlds": [
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 0,
+      "ref_cost": 309359.0150298706,
+      "rep_cost": 309359.0150298706,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 1,
+      "ref_cost": 308870.4653315756,
+      "rep_cost": 308870.4653315756,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 2,
+      "ref_cost": 309229.0590555988,
+      "rep_cost": 309229.0590555988,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 3,
+      "ref_cost": 309075.89346073585,
+      "rep_cost": 309075.89346073585,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 4,
+      "ref_cost": 308957.5039330359,
+      "rep_cost": 308957.5039330359,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 5,
+      "ref_cost": 310323.9887764679,
+      "rep_cost": 310323.9887764679,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 6,
+      "ref_cost": 309048.7503788313,
+      "rep_cost": 309048.7503788313,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 7,
+      "ref_cost": 310185.23417843855,
+      "rep_cost": 310185.23417843855,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 8,
+      "ref_cost": 309895.7922593335,
+      "rep_cost": 309895.7922593335,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 42,
+      "world": 9,
+      "ref_cost": 308980.2747019155,
+      "rep_cost": 308980.2747019155,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 0,
+      "ref_cost": 309927.1992930648,
+      "rep_cost": 309927.1992930648,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 1,
+      "ref_cost": 310382.27134681685,
+      "rep_cost": 310382.27134681685,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 2,
+      "ref_cost": 310454.1425974431,
+      "rep_cost": 310454.1425974431,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 3,
+      "ref_cost": 310653.5195062306,
+      "rep_cost": 310653.5195062306,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 4,
+      "ref_cost": 310043.5717937065,
+      "rep_cost": 310043.5717937065,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 5,
+      "ref_cost": 310386.8033149194,
+      "rep_cost": 310386.8033149194,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 6,
+      "ref_cost": 310390.9465973892,
+      "rep_cost": 310390.9465973892,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 7,
+      "ref_cost": 310214.5332872001,
+      "rep_cost": 310214.5332872001,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 8,
+      "ref_cost": 309747.21316093445,
+      "rep_cost": 309747.21316093445,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 142,
+      "world": 9,
+      "ref_cost": 310608.3390871803,
+      "rep_cost": 310608.3390871803,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 0,
+      "ref_cost": 310127.0496910486,
+      "rep_cost": 310127.0496910486,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 1,
+      "ref_cost": 309540.9642905747,
+      "rep_cost": 309540.9642905747,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 2,
+      "ref_cost": 309369.2693135971,
+      "rep_cost": 309369.2693135971,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 3,
+      "ref_cost": 309001.0863595494,
+      "rep_cost": 309001.0863595494,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 4,
+      "ref_cost": 309120.6126095588,
+      "rep_cost": 309120.6126095588,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 5,
+      "ref_cost": 309148.0172315542,
+      "rep_cost": 309148.0172315542,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 6,
+      "ref_cost": 308718.4056614239,
+      "rep_cost": 308718.4056614239,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 7,
+      "ref_cost": 309028.4411331136,
+      "rep_cost": 309028.4411331136,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 8,
+      "ref_cost": 308931.80809743656,
+      "rep_cost": 308931.80809743656,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "sac_rule",
+      "seed": 242,
+      "world": 9,
+      "ref_cost": 309023.8016703572,
+      "rep_cost": 309023.8016703572,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 0,
+      "ref_cost": 309932.3633303938,
+      "rep_cost": 309932.3633303938,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 1,
+      "ref_cost": 309509.1162678791,
+      "rep_cost": 309509.1162678791,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 2,
+      "ref_cost": 309881.4753432961,
+      "rep_cost": 309881.4753432961,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 3,
+      "ref_cost": 309683.6344219007,
+      "rep_cost": 309683.6344219007,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 4,
+      "ref_cost": 309707.29626328126,
+      "rep_cost": 309707.29626328126,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 5,
+      "ref_cost": 310567.67192021885,
+      "rep_cost": 310567.67192021885,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 6,
+      "ref_cost": 309711.4510494013,
+      "rep_cost": 309711.4510494013,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 7,
+      "ref_cost": 310829.75620659295,
+      "rep_cost": 310829.75620659295,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 8,
+      "ref_cost": 310678.91611731943,
+      "rep_cost": 310678.91611731943,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 42,
+      "world": 9,
+      "ref_cost": 309843.04590536735,
+      "rep_cost": 309843.04590536735,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 0,
+      "ref_cost": 309758.59613107145,
+      "rep_cost": 309758.59613107145,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 1,
+      "ref_cost": 310203.14407345746,
+      "rep_cost": 310203.14407345746,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 2,
+      "ref_cost": 310000.546535193,
+      "rep_cost": 310000.546535193,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 3,
+      "ref_cost": 309927.6651676864,
+      "rep_cost": 309927.6651676864,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 4,
+      "ref_cost": 309664.69138959347,
+      "rep_cost": 309664.69138959347,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 5,
+      "ref_cost": 309649.48749823216,
+      "rep_cost": 309649.48749823216,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 6,
+      "ref_cost": 309473.59333882557,
+      "rep_cost": 309473.59333882557,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 7,
+      "ref_cost": 310027.70576183696,
+      "rep_cost": 310027.70576183696,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 8,
+      "ref_cost": 309272.2432930645,
+      "rep_cost": 309272.2432930645,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 142,
+      "world": 9,
+      "ref_cost": 310341.5856100788,
+      "rep_cost": 310341.5856100788,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 0,
+      "ref_cost": 310677.5651291764,
+      "rep_cost": 310677.5651291764,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 1,
+      "ref_cost": 310720.2433491599,
+      "rep_cost": 310720.2433491599,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 2,
+      "ref_cost": 310391.0304767799,
+      "rep_cost": 310391.0304767799,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 3,
+      "ref_cost": 310392.83669112413,
+      "rep_cost": 310392.83669112413,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 4,
+      "ref_cost": 310300.4083577183,
+      "rep_cost": 310300.4083577183,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 5,
+      "ref_cost": 309954.9024996325,
+      "rep_cost": 309954.9024996325,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 6,
+      "ref_cost": 309651.5994984589,
+      "rep_cost": 309651.5994984589,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 7,
+      "ref_cost": 310310.87066506996,
+      "rep_cost": 310310.87066506996,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 8,
+      "ref_cost": 310487.86853393336,
+      "rep_cost": 310487.86853393336,
+      "delta_pct": 0.0
+    },
+    {
+      "arm": "dual_sac",
+      "seed": 242,
+      "world": 9,
+      "ref_cost": 310241.3866419579,
+      "rep_cost": 310241.3866419579,
+      "delta_pct": 0.0
+    }
+  ],
+  "rule_arms": [
+    {
+      "arm": "fixed_rule",
+      "seed": 42,
+      "max_abs_cost_gap": 0.0,
+      "worlds": 10
+    },
+    {
+      "arm": "fixed_rule",
+      "seed": 142,
+      "max_abs_cost_gap": 0.0,
+      "worlds": 10
+    },
+    {
+      "arm": "fixed_rule",
+      "seed": 242,
+      "max_abs_cost_gap": 0.0,
+      "worlds": 10
+    },
+    {
+      "arm": "rolling_rule",
+      "seed": 42,
+      "max_abs_cost_gap": 0.0,
+      "worlds": 10
+    },
+    {
+      "arm": "rolling_rule",
+      "seed": 142,
+      "max_abs_cost_gap": 0.0,
+      "worlds": 10
+    },
+    {
+      "arm": "rolling_rule",
+      "seed": 242,
+      "max_abs_cost_gap": 0.0,
+      "worlds": 10
+    }
+  ],
+  "run_level_abs_pct": {
+    "min": 0.0,
+    "max": 0.0
+  },
+  "world_level_abs_pct": {
+    "min": 0.0,
+    "max": 0.0,
+    "n": 60
+  },
+  "rule_arms_max_gap_yuan": 0.0
+}

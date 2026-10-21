@@ -39,8 +39,10 @@ results/parts/*
 !results/parts/*.json
 # 合并后的四臂基准结果随仓库发布: 图表与 5.4 表格可由它复现, 无需重训
 !results/four_arm_benchmark.json
-# 消融只发布配对汇总 (逐世界原始分片仍在 results/parts/, 体积大且可由开关重跑)
+# 消融的配对汇总也发布 (逐世界原始分片在 results/parts/, 上面两条规则已放行)
 !results/ablation_summary.json
+# 0.4% 判读门槛的跨进程重复运行差值汇总 (审计 N05), 由 compare_repeat_run.py 生成
+!results/repeat_noise.json
 .trash_void/
 
 # IDE

@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -29,7 +30,7 @@ from src.utils.config import INDUSTRIAL_LOAD_PARAMS, SIM_PARAMS, TOTAL_DEMAND  #
 from src.utils.reproducibility import source_lock                        # noqa: E402
 
 LEARNERS = ("sac_rule", "dual_sac")
-THRESHOLD = 0.4            # 5.1 节的运行间噪声门槛 (%), 小于它的差值不得用作结论
+THRESHOLD = 0.4            # 5.1 节的判读门槛 (%): 经验性审慎规则, 当前代码实测的运行间噪声为 0
 ABL_ROWS = {"未来暴露成本塑形": "no_exposure_shaping",
             "现货奖励放大": "no_spot_reward_scale",
             "三阶段交替训练": "no_alternating"}
@@ -131,14 +132,19 @@ def nums(cell: str) -> list:
 # 除了检查行号还在文件范围内, 还要求那段里出现关键字 —— 只查范围挡不住"行号有效但指错了地方"。
 CITATION_KEYS = {
     "src/market/environment.py:354-359": "compute_cvar",
+    "src/market/environment.py:335-340": "scale_spot_reward",
     "src/market/environment.py:441-443": "pub_monthly",
-    "src/utils/config.py:15": "annual",
+    "src/market/settlement.py:365-375": "frac",
+    "src/utils/config.py:15-15": "annual",
+    "src/utils/config.py:123-123": "risk_lambda",
+    "src/utils/config.py:124-124": "cvar_eta",
     "experiments/run_four_arm_benchmark.py:378-383": "--no-alternating",
+    "experiments/run_four_arm_benchmark.py:102-104": "torch.manual_seed",
 }
 CITE_RE = re.compile(r"(src/[a-z_/]+\.py|experiments/[a-z_/]+\.py):(\d+)(?:-(\d+))?")
 
 
-def check_doc_only(c: "Checker", md: str, readme_path: str) -> None:
+def check_doc_only(c: "Checker", md: str, readme_path: str, completion_path: str = "") -> None:
     """与 JSON 无关、只靠当前仓库就能判真伪的正文主张。"""
     for path, start, end in CITE_RE.findall(md):
         start, end = int(start), int(end or start)
@@ -153,7 +159,11 @@ def check_doc_only(c: "Checker", md: str, readme_path: str) -> None:
         if not (0 < start <= end <= len(lines)) or not body.strip():
             c.bad += 1
             print(f"  [XX] 引用 {path}:{start}-{end}: 行号越界或内容为空 (文件共 {len(lines)} 行)")
-        elif key and key not in body:
+        elif not key:
+            c.bad += 1
+            print(f"  [XX] 引用 {path}:{start}-{end}: 未在 CITATION_KEYS 登记 —— "
+                  f"行号有效但没人核对它指向哪段 (新增/改动引用请同时登记关键字)")
+        elif key not in body:
             c.bad += 1
             print(f"  [XX] 引用 {path}:{start}-{end}: 那段里找不到 {key!r}, 引用已随代码漂移")
     c.plain("每条带行号的引用都被上面逐条检查过", len(CITE_RE.findall(md)) >= len(CITATION_KEYS),
@@ -163,6 +173,11 @@ def check_doc_only(c: "Checker", md: str, readme_path: str) -> None:
                   for p in sorted(glob.glob("experiments/test_*.py")))
     token = f"{n_cases} 个验收用例"
     c.value("5.2 验收用例总数 = 各 test 文件里的 def test_ 之和", float(n_cases), n_cases, token, 0)
+    # 文档里任何"N 个验收用例 / N 用例"的写法都必须等于实测值, 否则是第二套没同步的旧计数
+    stray = {int(m) for txt in (md, open(readme_path, encoding="utf-8").read()
+                                if os.path.exists(readme_path) else "")
+             for m in re.findall(r"(\d+)\s*个?验收用例", txt)} - {n_cases}
+    c.plain("报告与 README 里出现的验收用例计数只有实测值", not stray, f"还出现过的计数: {sorted(stray)}")
     # README 复述同一个用例数; 它不在或数字脱钩都算不符 (审计 N07: 缺文档不能"通过")
     readme_txt = (open(readme_path, encoding="utf-8").read()
                   if os.path.exists(readme_path) else "")
@@ -178,15 +193,28 @@ def check_doc_only(c: "Checker", md: str, readme_path: str) -> None:
     try:
         import experiments.selfcheck_verifier as S
     except Exception as exc:                                  # 导入失败也要报告, 不能默默跳过
+        mut_token = ""
         c.plain("反向用例条数可读 (selfcheck_verifier 能被导入)", False, f"{type(exc).__name__}: {exc}")
     else:
-        n_mut = len(S.MUTATIONS) + len(S.DATA_MUTATIONS)
-        token = f"{n_mut} 处变异"
-        c.text(f"附录 反向用例条数 = 脚本里的 {len(S.MUTATIONS)}+{len(S.DATA_MUTATIONS)}", token)
+        n_mut = len(S.MUTATIONS) + len(S.DATA_MUTATIONS) + len(S.REPEAT_MUTATIONS)
+        mut_token = f"{n_mut} 处变异"
+        c.text(f"附录 反向用例条数 = 脚本里的 {len(S.MUTATIONS)}+{len(S.DATA_MUTATIONS)}"
+               f"+{len(S.REPEAT_MUTATIONS)}", mut_token)
         c.n += 1
-        if token not in readme_txt:
+        if mut_token not in readme_txt:
             c.bad += 1
-            print(f"  [XX] README 的反向用例条数: 应写着 {token!r}, 实际找不到")
+            print(f"  [XX] README 的反向用例条数: 应写着 {mut_token!r}, 实际找不到")
+
+    # 完成度评估复述同一个用例数与变异条数, 它脱钩时同样是虚假主张
+    if completion_path and os.path.exists(completion_path):
+        ct = open(completion_path, encoding="utf-8").read()
+        for tk, what in ((token, "验收用例数"), (mut_token, "反向用例条数")):
+            if not tk:
+                continue
+            c.n += 1
+            if tk not in ct:
+                c.bad += 1
+                print(f"  [XX] 完成度评估的{what}: 应写着 {tk!r}, 实际找不到")
 
 
 def md_row(md: str, part: str, arm: str) -> list:
@@ -205,6 +233,12 @@ def main() -> int:
     ap.add_argument("--parts", default="results/parts/ablation_*.json")
     ap.add_argument("--summary", default="results/ablation_summary.json")
     ap.add_argument("--readme", default="README.md")
+    ap.add_argument("--completion", default="项目完成度评估报告.md")
+    ap.add_argument("--repeat-learner", dest="repeat_learner",
+                    default="results/parts/repeat_four_arm_A.json")
+    ap.add_argument("--repeat-rule", dest="repeat_rule",
+                    default="results/parts/repeat_rule_A.json")
+    ap.add_argument("--repeat-summary", dest="repeat_summary", default="results/repeat_noise.json")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -264,7 +298,7 @@ def main() -> int:
     c.value("组合数", float(data["meta"]["n_runs"]), 60, "60 个组合", 0)
     c.value("failures 条数", float(len(data["failures"])), 0, "`failures` 为空", 0)
     lo, hi = rng([wch["energy_residual_mwh"] for wch in chk])
-    c.value("电量守恒残差上限", hi / 1e-13, 8, r"8\times10^{-13}", 0.5)
+    c.text("电量守恒残差上限 (正文按 1e-12 写)", f"{hi / 1e-12:.2f}\\times10^{{-12}}")
     c.value("分项之和与市场成本的最大残差",
             max(abs(wch["cost_recomputed_residual"]) for wch in chk), 0,
             "600 个世界全为 0", 1e-9)
@@ -296,7 +330,7 @@ def main() -> int:
     net = np.array([w["energy_breakdown"]["total"] for w in worlds], dtype=float) - TOTAL_DEMAND
     c.value("保障调度臂年成交电量对 Q 的最大残差", float(np.max(np.abs(
         np.array([w["energy_breakdown"]["total"] for w in fx], dtype=float) - TOTAL_DEMAND))),
-        0.0, "年成交电量都闭合于 Q", 1e-6)
+        0.0, "年成交电量都闭合于", 1e-6)
     # 柔性动作只能通过 EV 往返损耗抬高网侧年电量, 绝不可能低于 Q (工业任务电量守恒)
     c.plain("全部世界的年成交电量不低于 Q", float(net.min()) > -1e-9, f"最小 {net.min():+.4f} MWh")
     ex = float(net.max()) / TOTAL_DEMAND * 100.0
@@ -343,6 +377,113 @@ def main() -> int:
             ab == {"exposure_shaping": True, "scale_spot_reward": True, "alternating": True},
             f"实测 {ab}")
 
+    # ---------- 2c. 3.4 遗留调度接口: 报告声称"数值不经过它", 这里静态核对 (审计 F05/N08) ----------
+    chain = ("experiments/run_four_arm_benchmark.py", "src/market/environment.py",
+             "src/market/settlement.py", "src/load/flexible_executor.py",
+             "src/agent/rule_policies.py", "src/agent/multi_agent.py")
+    src_txt = {p: (Path(p).read_text(encoding="utf-8") if Path(p).exists() else "") for p in chain}
+    hits = {p: [t for t in ("optimize_transfer", "get_combined_profile", "FlexibleDispatcher")
+                if t in txt] for p, txt in src_txt.items()}
+    c.plain("四臂链路的 6 个文件都不引用遗留调度接口",
+            all(not v for v in hits.values()), str({k: v for k, v in hits.items() if v}))
+    ls = Path("src/load/load_scenarios.py").read_text(encoding="utf-8")
+    c.plain("遗留 optimize_transfer 确实只在场景构建里被调用一次",
+            ls.count("optimize_transfer(") == 1, f"实测 {ls.count('optimize_transfer(')} 处")
+    c.text("3.4 遗留接口已删除的表述", "已在迭代 8.7 随作废产物一并删除")
+    c.text("3.4 遗留接口调用方表述", "哑价格调用过一次")
+
+    # ---------- 2d. 5.6 奖励量级比与成本分层: 当场重跑 10 条 rollout, 不依赖脚本的历史输出 ----------
+    from experiments.measure_reward_scale import _roll
+    from src.agent.rule_policies import fixed_ratio_action, rolling_rule_action
+    from src.utils.config import PRICE_SCENARIOS
+
+    rr, ss = [], []
+    for scn in PRICE_SCENARIOS:
+        for rule in (fixed_ratio_action, rolling_rule_action):
+            m, s, mid_share, _ = _roll(scn, rule)
+            rr.append(s / m)
+            ss.append(mid_share)
+    lo_r, hi_r, mean_r = min(rr), max(rr), float(np.mean(rr))
+    lo_s, hi_s, mean_s = min(ss), max(ss), float(np.mean(ss))
+    c.text("5.6 奖励量级比区间", f"{lo_r:.1f}\\sim{hi_r:.1f}")
+    c.text("5.6 奖励量级比均值", f"均值 {mean_r:.1f}")
+    c.text("5.6 中长期成本占比区间", f"{lo_s * 100:.0f}\\%\\sim{hi_s * 100:.0f}\\%")
+    c.text("5.6 中长期成本占比均值", f"均值 {mean_s * 100:.1f}%")
+
+    # ---------- 2e. 0.4% 判读门槛的仓库内证据: 跨进程重复运行, 差值当场由分片重算 (审计 N05/N07) ----------
+    rep_runs, have_rep = {}, True
+    for who, p in (("学习臂", args.repeat_learner), ("规则臂", args.repeat_rule)):
+        c.n += 1
+        if not os.path.exists(p):
+            c.bad += 1
+            print(f"  [XX] {who}的重复运行分片不存在: {p} —— 门槛的证据要随仓库发布, 不能只留结论")
+            have_rep = False
+            continue
+        d = load(p)
+        check_lock(d["meta"], f"{p} (重复运行)")
+        for r in d["runs"]:
+            c.n += 1
+            if (r["arm"], r["seed"]) in rep_runs:
+                c.bad += 1
+                print(f"  [XX] {r['arm']}/seed{r['seed']} 同时出现在两份重复运行分片里, 配对对象不唯一")
+            rep_runs[(r["arm"], r["seed"])] = r
+    if have_rep:
+        _, base_a_ref = load_base(args.json, S["A"])
+        learner_gaps, rule_gaps, mis = [], [], []
+        for (arm, seed), rep in sorted(rep_runs.items()):
+            ref = base_a_ref.get((arm, seed))
+            if ref is None:
+                mis.append(f"{arm}/seed{seed} 不在主基准场景 A 里")
+                continue
+            if len(ref["worlds"]) != len(rep["worlds"]):
+                mis.append(f"{arm}/seed{seed} 世界数 {len(rep['worlds'])} != {len(ref['worlds'])}")
+                continue
+            for wa, wb in zip(ref["worlds"], rep["worlds"]):
+                if wa["world"] != wb["world"]:
+                    mis.append(f"{arm}/seed{seed} 世界编号 {wa['world']} vs {wb['world']}")
+                    break
+                g = abs(float(wb["cost"]) - float(wa["cost"]))
+                (learner_gaps if arm in LEARNERS else rule_gaps).append(g)
+        gaps = learner_gaps + rule_gaps
+        c.plain("重复运行的每个组合都在主基准场景 A 里且逐世界编号对齐", not mis, "; ".join(mis[:3]))
+        c.value("重复运行覆盖的 (臂, 种子) 组合数", float(len(rep_runs)), 12, "12 个组合", 0)
+        c.value("重复运行的学习臂配对世界数", float(len(learner_gaps)), 60, "60 个配对世界", 0)
+        c.value("重复运行的规则臂配对世界数", float(len(rule_gaps)), 60, "60 个配对世界", 0)
+        c.value("重复运行的配对世界总数", float(len(gaps)), 120, "120 个配对世界", 0)
+        c.plain("重复运行: 学习臂逐世界成本差为 0 (三套随机流已锁定, 同配置跨进程可复现)",
+                bool(learner_gaps) and max(learner_gaps) == 0.0,
+                f"最大 {max(learner_gaps):.6g} 元" if learner_gaps else "没有学习臂配对世界")
+        c.plain("重复运行: 规则臂逐世界成本差为 0 (“同 seed 同世界”前提本身成立)",
+                bool(rule_gaps) and max(rule_gaps) == 0.0,
+                f"最大 {max(rule_gaps):.6g} 元" if rule_gaps else "没有规则臂配对世界")
+        rp = args.repeat_summary
+        c.n += 1
+        if not os.path.exists(rp):
+            c.bad += 1
+            print(f"  [XX] {rp} 缺失: 门槛证据的汇总要入库, 否则正文的 0 只差值没人复核")
+        else:
+            s = load(rp)
+            c.value(f"{os.path.basename(rp)} 的学习臂配对世界数与重算相符",
+                    float(s["meta"]["learner_paired_worlds"]), float(len(learner_gaps)),
+                    "120 个配对世界", 0)
+            c.value(f"{os.path.basename(rp)} 的规则臂最大差 = 当场重算值",
+                    float(s["rule_arms_max_gap_yuan"]), float(max(rule_gaps)) if rule_gaps else 0.0,
+                    "120 个配对世界", 0)
+            c.plain(f"{os.path.basename(rp)} 记录的重复运行噪声上界为 0",
+                    float(s["run_level_abs_pct"]["max"]) == 0.0,
+                    f"运行级 |Δ| 最大 {s['run_level_abs_pct']['max']:.6g}%")
+        for label, path in (("报告", args.md), ("README", args.readme), ("完成度评估", args.completion)):
+            txt = md if path == args.md else (open(path, encoding="utf-8").read()
+                                              if os.path.exists(path) else "")
+            c.n += 1
+            if "120 个配对世界" not in txt:
+                c.bad += 1
+                print(f"  [XX] {path}: 没写出重复运行的证据规模 (120 个配对世界), 门槛来源仍无处可查")
+            c.n += 1
+            if "噪声门槛" in txt:
+                c.bad += 1
+                print(f"  [XX] {path}: 仍把 0.4% 写成“噪声门槛” —— 实测噪声已是 0, 该门槛是审慎规则")
+
     def costs(scn, arm):
         return float(np.mean([r["mean_cost"] for r in by_key[(scn, arm)]]))
 
@@ -361,31 +502,70 @@ def main() -> int:
         c.value(f"{s} 滚动规则改进", d, round(d, 1), f"{d:+.1f}%", 0.05)
 
     # ---------- 4. 跨场景均值 ----------
-    for arm, ref, written, token in [
-        (strong, base, 0.69, "+0.69%"), ("dual_sac", base, 0.61, "+0.61%"),
-        ("dual_sac", strong, -0.09, "\u22120.09%"), ("sac_rule", base, 0.25, "+0.25%"),
-        ("sac_rule", strong, -0.45, "\u22120.45%"),
-    ]:
+    # 这些串一律由数据拼出: 写死一个"上次算出来的数"就等于把审计器变成另一份要手工同步的正文。
+    means = {}
+    for arm, ref in [(strong, base), ("dual_sac", base), ("dual_sac", strong),
+                     ("sac_rule", base), ("sac_rule", strong)]:
         v = float(np.mean([delta(scn, arm, ref)[0] for scn in scenarios]))
-        c.value(f"5 场景均值 {arm} vs {ref}", v, written, token, 0.005)
+        means[(arm, ref)] = v
+        c.text(f"5 场景均值 {arm} vs {ref}", f"{v:+.2f}%")
+    rb = [delta(scn, strong, base)[0] for scn in scenarios]
+    rb_lo, rb_hi = rng(rb)
+    c.text("5.3 规则臂差距区间 (正文 4 处引用同一区间)", f"{rb_lo:+.1f}%~{rb_hi:+.1f}%")
 
-    # ---------- 5. 5.4.1 年度饱和 ----------
+    # ---------- 5. 5.4.1 年度饱和与"年度层贵贱"机制 ----------
+    def layer_price(scn, layer):
+        ws = [w for r in by_key[(scn, base)] for w in r["worlds"]]
+        return (float(np.mean([w["cost_breakdown"][layer] for w in ws]))
+                / float(np.mean([w["energy_breakdown"][layer] for w in ws])))
+
     for scn in scenarios:
         s = scn[:1]
         al = [w["alphas"][0] for a in LEARNERS for r in by_key[(scn, a)] for w in r["worlds"]]
         v = float(np.mean(al))
         c.text(f"5.4.1 {s} 学习臂 α 列", f"| {s} | ")
         c.value(f"5.4.1 {s} 学习臂 α 合并均值", v, round(v, 3), f"| {v:.3f} |", 5e-4)
+        pa, pm = layer_price(scn, "annual"), layer_price(scn, "monthly")
+        c.text(f"5.4.1 {s} 年度/月度层均价列", f"| {pa:.1f} | {pm:.1f} | {pa - pm:+.1f} |")
+        c.text(f"5.4.1 {s} 两学习臂相对滚动规则",
+               " / ".join(f"{delta(scn, a, strong)[0]:+.2f}%" for a in LEARNERS))
+    sign_ok = [(layer_price(scn, "annual") < layer_price(scn, "monthly"))
+               == (delta(scn, a, strong)[0] > 0)
+               for scn in scenarios for a in LEARNERS]
+    c.value("5.4.1 改进符号与年度层贵贱符号一致", float(all(sign_ok)), 1.0,
+            "符号完全一致", 0)
+    # 年度超配的定量估算: 规则臂年度锚定 α=0.800 (两条都是), 学习臂合并均值见 α 列
+    expl = {}
+    for s in ("E", "B"):
+        scn = [x for x in scenarios if x.startswith(s)][0]
+        a_sac = float(np.mean([w["alphas"][0] for r in by_key[(scn, "sac_rule")] for w in r["worlds"]]))
+        dp = layer_price(scn, "annual") - layer_price(scn, "monthly")
+        est = (a_sac - 0.80) * TOTAL_DEMAND * dp
+        obs = costs(scn, "sac_rule") - costs(scn, strong)
+        c.text(f"5.4.1 {s} 超配电量", f"{(a_sac - 0.80) * TOTAL_DEMAND:.1f} MWh")
+        c.text(f"5.4.1 {s} 估算超配成本", f"{est:,.0f} 元")
+        c.text(f"5.4.1 {s} 观测贵出的金额", f"贵 {obs:,.0f} 元")
+        c.value(f"5.4.1 {s} 可解释比例", est / obs * 100, round(est / obs * 100),
+                f"{est / obs * 100:.0f}%", 0.5)
+        expl[s] = est / obs * 100
     frac = {f"{scn[:1]}/{a}": np.mean([w["alphas"][0] > 0.885
               for r in by_key[(scn, a)] for w in r["worlds"]])
             for scn in scenarios for a in LEARNERS}
     exceptions = {k: v for k, v in frac.items() if v < 1.0}
-    c.value("α>0.885 满额组合数", float(len(frac) - len(exceptions)), 9,
-            "唯一例外是 B 场景的 `dual_sac`（67%）", 0)
-    if exceptions != {"B/dual_sac": 2 / 3}:
-        print(f"  [XX] α 饱和例外与正文不符: {exceptions}")
-        c.bad += 1
-    c.n += 1
+    by_s: dict = {}
+    for k, v in frac.items():
+        by_s.setdefault(k.split("/")[0], []).append(float(v))
+    half = len(next(iter(by_s.values())))
+    mixed = [s for s, v in by_s.items() if any(x < 1.0 for x in v) and any(x >= 1.0 for x in v)]
+    uneven = [s for s, v in by_s.items() if len(set(v)) > 1]
+    c.plain("α 未饱和总是整条场景两臂一起且比例相同 (正文写两条学习臂各 N% 才成立)",
+            not mixed and not uneven, f"半饱和场景 {mixed}, 两臂比例不一 {uneven}")
+    c.text("5.4.1 α>0.885 满额组合数", f"{len(frac) - len(exceptions)} 个的全部 30 个世界满足")
+    for s, v in sorted(by_s.items()):
+        if all(x >= 1.0 for x in v):
+            continue
+        c.text(f"5.4.1 {s} 场景两臂 α 未饱和比例 ({half} 个组合)",
+               f"{s} 场景的两条学习臂（各 {min(v) * 100:.0f}%）")
 
     # ---------- 6. 5.4.2 dual 相对 sac ----------
     ds = []
@@ -399,64 +579,87 @@ def main() -> int:
         c.value(f"5.4.2 {s} dual−sac", d, round(d, 2), row, 0.005)
         c.either(f"5.4.2 {s} 更省世界数", [f"{row} {w}/{n} |", f"{row} **{w}/{n}** |"])
         c.text(f"5.4.2 {s} 逐种子列", " / ".join(f"{p:+.2f}%" for _, p, _, _ in ps))
-    c.value("5.4.2 五场景均值", float(np.mean(ds)), 0.365, "**+0.365%**", 0.0005)
+    mean_ds = float(np.mean(ds))
+    c.text("5.4.2 五场景均值", f"**{mean_ds:+.3f}%**")
+    c.text("5.4.2 五场景均值 (6.1 紧排)", f"{mean_ds:+.2f}%")
+    a_gap = {scn[:1]: float(np.mean([w["alphas"][0] for r in by_key[(scn, "dual_sac")] for w in r["worlds"]])
+                            - np.mean([w["alphas"][0] for r in by_key[(scn, "sac_rule")] for w in r["worlds"]]))
+             for scn in scenarios}
+    c.text("5.4.2 两臂年度覆盖率差上界", f"≤{max(abs(v) for v in a_gap.values()):.3f}")
+    b_key = [s for s in scenarios if s.startswith("B")][0]
+    gap_b = costs(b_key, "sac_rule") - costs(b_key, "dual_sac")
+    est_b = abs(a_gap["B"]) * TOTAL_DEMAND * abs(layer_price(b_key, "annual")
+                                                 - layer_price(b_key, "monthly"))
+    c.text("5.4.2 B 场景年度层可解释的差额", f"只值约 {est_b:,.0f} 元")
+    c.text("5.4.2 B 场景两臂成本差", f"{gap_b:,.0f} 元")
+    c.text("5.4.2 B 场景年度层解释占比", f"{est_b / gap_b * 100:.1f}% 能由年度层解释")
 
     # ---------- 7. 5.7 剖面 / 均价 / 强度 ----------
     def prof(s, arm):
         return np.mean([w["gammas"] for r in by_key[(S[s], arm)] for w in r["worlds"]], axis=0)
 
+    DASH = "–"
     e_d, e_s, e_r = (prof("E", a) for a in ("dual_sac", "sac_rule", strong))
     b_d, b_s, b_r = (prof("B", a) for a in ("dual_sac", "sac_rule", strong))
     b_mid, b_all = np.concatenate([b_d[6:9], b_s[6:9]]), np.concatenate([b_d, b_s])
-    for label, vals, written_lo, written_hi, token in [
-        ("E dual 剖面", e_d, 0.966, 0.997, "0.966–0.997"),
-        ("E sac 除首月", e_s[1:], 0.982, 0.999, "0.982–0.999"),
-        ("E rolling 除首月", e_r[1:], 0.996, 0.998, "0.996–0.998"),
-        ("B 学习臂 7–9 月", b_mid, 0.893, 0.899, "0.893–0.899"),
-        ("B 学习臂剖面", b_all, 0.893, 0.962, "0.893–0.962"),
-        ("B rolling 除首月", b_r[1:], 0.881, 0.893, "0.881–0.893"),
-    ]:
-        lo, hi = rng(vals)
-        c.value(f"5.7 {label} 下界", lo, written_lo, token, 5e-4)
-        c.value(f"5.7 {label} 上界", hi, written_hi, token, 5e-4)
-    for label, v, written, token in [
-        ("E sac 首月", e_s[0], 0.942, "除首月 0.942"),
-        ("E rolling 首月", e_r[0], 0.968, "除首月 0.968"),
-        ("B rolling 首月", b_r[0], 0.983, "除首月 0.983"),
-        ("B dual 最低月", b_d.min(), 0.893, "第 9 月\n   0.893"),
-        ("B sac 最低月", b_s.min(), 0.894, "第 12 月 0.894"),
-    ]:
-        c.value(f"5.7 {label}", float(v), written, token, 5e-4)
+    c.text("5.7 E dual 剖面区间", f"{e_d.min():.3f}{DASH}{e_d.max():.3f}")
+    for label, p in (("E sac_rule", e_s), ("E 滚动规则", e_r), ("B 滚动规则", b_r)):
+        c.text(f"5.7 {label} 首月+其余月区间",
+               f"除首月 {p[0]:.3f} 外落在 {p[1:].min():.3f}{DASH}{p[1:].max():.3f}")
+    lo, hi = rng(b_mid)
+    c.text("5.7 B 学习臂 7–9 月区间", f"{lo:.3f}{DASH}{hi:.3f}")
+    lo, hi = rng(b_all)
+    c.text("5.7 B 学习臂全区间", f"{lo:.3f}{DASH}{hi:.3f}")
+    for arm, p in (("dual_sac", b_d), ("sac_rule", b_s)):
+        c.text(f"5.7 B {arm} 最低月", f"`{arm}` 为 {p.min():.3f}（第 {int(np.argmin(p)) + 1} 月）")
     argmins = [int(np.argmin(prof(s, a))) + 1 for s in "ABCDE" for a in LEARNERS]
-    c.value("5.7 最低月落在 Q4 的剖面数", float(sum(m >= 10 for m in argmins)), 1,
-            "最低月落在第 4 季度的只有 1 个", 0)
-    others = [m for m in argmins if m < 10]
-    c.text("5.7 其余剖面最低月集合", "1、5、8、9 月")
-    if sorted(set(others)) != [1, 5, 8, 9]:
-        print(f"  [XX] 5.7 其余剖面最低月集合实际为 {sorted(set(others))}")
-        c.bad += 1
-    c.n += 1
+    q4 = sum(m >= 10 for m in argmins)
+    c.value("5.7 最低月落在 Q4 的剖面数", float(q4), float(q4), f"最低月落在第 4 季度的有 {q4} 个", 0)
+    others = sorted({m for m in argmins if m < 10})
+    c.text("5.7 其余剖面最低月集合", "、".join(str(m) for m in others) + " 月")
+    q4s = [m for m in argmins if m >= 10]
+    c.text("5.7 Q4 最低月的月序分布",
+           "、".join(f"第 {m} 月 {q4s.count(m)} 个" for m in sorted(set(q4s))))
+    lo, hi = rng([float(np.ptp(prof(s, a))) for s in "ABCDE" for a in LEARNERS])
+    c.text("5.7 学习臂剖面全距区间", f"全距只有 {lo:.3f}{DASH}{hi:.3f}")
+    c.plain("B sac_rule 最低月与第 8 月同值 (正文写'相同')",
+            abs(float(b_s[7]) - float(b_s.min())) < 5e-4,
+            f"8 月 {b_s[7]:.3f} vs 最低 {b_s.min():.3f}")
 
     def spot_price(s, arm):
         sc = [w["cost_breakdown"]["spot"] for r in by_key[(S[s], arm)] for w in r["worlds"]]
         en = [w["energy_breakdown"]["spot"] for r in by_key[(S[s], arm)] for w in r["worlds"]]
         return float(np.mean(sc) / np.mean(en)), float(np.mean(en))
 
-    c.value("5.7 E fixed 现货成交均价", spot_price("E", base)[0], 493.3, "493.3 元/MWh", 0.05)
-    c.value("5.7 B fixed 现货成交均价", spot_price("B", base)[0], 294.9, "294.9 元/MWh", 0.05)
+    for s in "EB":
+        v = spot_price(s, base)[0]
+        c.value(f"5.7 {s} fixed 现货成交均价", v, round(v, 1), f"{v:.1f} 元/MWh", 0.05)
     all_lower = all(spot_price(s, "dual_sac")[0]
                     < min(spot_price(s, base)[0], spot_price(s, strong)[0]) for s in "ABCDE")
     c.value("dual 现货均价 5 场景低于两条规则臂", float(all_lower), 1.0,
             "全部低于两条规则臂", 0)
-    e_q = [round(spot_price("E", a)[1]) for a in (base, strong, "sac_rule", "dual_sac")]
-    c.text("5.7 E 四臂现货电量", " / ".join(str(q) for q in e_q) + " MWh")
-    for arm, token in [("dual_sac", "0.615–0.808"), ("rolling_rule", "0.018–0.347"),
-                       ("sac_rule", "0.040–0.290")]:
-        v = [float(np.mean([r["mean_intensity_abs"] for r in by_key[(scn, arm)]]))
-             for scn in scenarios]
-        lo, hi = rng(v)
-        c.value(f"5.7 {arm} 强度下界", lo, float(token.split("–")[0]), token, 5e-4)
-        c.value(f"5.7 {arm} 强度上界", hi, float(token.split("–")[1]), token, 5e-4)
+    d_ex = [spot_price("D", a)[0] for a in ("dual_sac", strong, base)]
+    c.text("5.7 D 现货均价例子", f"{d_ex[0]:.1f} vs {d_ex[1]:.1f} / {d_ex[2]:.1f} 元/MWh")
+    for s in "ED":
+        q = [round(spot_price(s, a)[1]) for a in (base, strong, "sac_rule", "dual_sac")]
+        c.text(f"5.7 {s} 四臂现货电量", " / ".join(str(x) for x in q) + " MWh")
+    ints = {arm: [float(np.mean([r["mean_intensity_abs"] for r in by_key[(scn, arm)]]))
+                  for scn in scenarios]
+            for arm in ("dual_sac", strong, "sac_rule")}
+    for arm in ints:
+        lo, hi = rng(ints[arm])
+        c.text(f"5.7 {arm} 强度区间", f"{lo:.3f}{DASH}{hi:.3f}")
+    lead = [i for i in range(len(scenarios))
+            if ints["dual_sac"][i] > max(ints[strong][i], ints["sac_rule"][i])]
+    lag = [i for i in range(len(scenarios)) if i not in lead]
+    c.text("5.7 dual 强度高于两条规则臂的场景",
+           "、".join(scenarios[i][:1] for i in lead) + f" {len(lead)} 个场景高于两条规则臂")
+    c.plain("未领先的场景与滚动规则强度之差 < 0.01 (正文才敢写基本持平)",
+            all(abs(ints["dual_sac"][i] - ints[strong][i]) < 0.01 for i in lag),
+            str([scenarios[i][:1] for i in lag]))
+    for i in lag:
+        c.text(f"5.7 dual 强度持平场景 {scenarios[i][:1]}",
+               f"{scenarios[i][:1]} 场景 {ints['dual_sac'][i]:.3f} vs 滚动规则 {ints[strong][i]:.3f}")
 
     # 5.4-3 的分层占比来自 JSON (5.6 的 92%~99%/94.7% 来自 measure_reward_scale.py, 不同采样)
     share = [layer_share(by_key, scn, arm)[0] for scn in scenarios for arm in arms]
@@ -571,10 +774,10 @@ def main() -> int:
     c.text("5.9 塑形代价区间 (1.3)",
            f"贵 {min(a['delta_pct'] for a in sh):.2f}%~{max(a['delta_pct'] for a in sh):.2f}%")
     c.text("5.9 结论三 另两项 Δ",
-           f"+{sp[0]['delta_pct']:.2f}%/+{sp[1]['delta_pct']:.2f}% 与 +{al['delta_pct']:.2f}%")
+           f"{sp[0]['delta_pct']:+.2f}%/{sp[1]['delta_pct']:+.2f}% 与 {al['delta_pct']:+.2f}%")
     c.text("4.4 另两项 Δ",
-           f"+{sp[0]['delta_pct']:.2f}%/+{sp[1]['delta_pct']:.2f}%（奖励放大）与 "
-           f"+{al['delta_pct']:.2f}%（交替训练）")
+           f"{sp[0]['delta_pct']:+.2f}%/{sp[1]['delta_pct']:+.2f}%（奖励放大）与 "
+           f"{al['delta_pct']:+.2f}%（交替训练）")
     for sep in (" / ", "/"):      # 5.9 结论二用宽排, 6.1 用紧排
         c.text(f"结论二 γ 掉档 (sep={sep!r})",
                f"{sh[0]['gamma_ref']:.3f}{sep}{sh[1]['gamma_ref']:.3f} 掉到 "
@@ -594,6 +797,8 @@ def main() -> int:
         cr.text("README 塑形 γ 掉档",
                 f"{sh[0]['gamma_ref']:.3f}/{sh[1]['gamma_ref']:.3f} 掉到 "
                 f"{sh[0]['gamma']:.3f}/{sh[1]['gamma']:.3f}")
+        cr.text("README 奖励量级比", f"{lo_r:.1f}~{hi_r:.1f}（均值 {mean_r:.1f}）")
+        cr.text("README 中长期成本占比", f"占 {lo_s * 100:.0f}%~{hi_s * 100:.0f}%、均值 {mean_s * 100:.1f}%")
         for part, v in ABL_ROWS.items():
             line = next((l for l in cr.md.splitlines() if l.startswith(f"| {part} |")), "")
             cells = [x.strip() for x in line.strip().strip("|").split("|")] if line else []
@@ -625,9 +830,24 @@ def main() -> int:
     c.value("5.9 结论一: 塑形两臂 Δ>门槛、逐种子同号、世界全更贵", float(ok1), 1.0,
             "唯一通过判读门槛的部件", 0)
     ok3 = all(a["delta_pct"] < THRESHOLD and len({d > 0 for d in seeds_of(a)}) == 2
-              and worse(a)[0] < worse(a)[1] for a in sp + [al])
-    c.value("5.9 结论三: 另两项 Δ<门槛且逐种子符号不一致", float(ok3), 1.0,
+              and worse(a)[0] < worse(a)[1] for a in [sp[1], al])
+    c.value("5.9 结论三: 双SAC 的另两项 Δ<门槛且逐种子符号不一致", float(ok3), 1.0,
             "逐种子符号不一致", 0)
+
+    # 分层臂的现货层是规则, --no-spot-reward-scale 只改现货步奖励的分母
+    # (src/market/environment.py:335-340), 因此它对 sac_rule 是构造性零结果, 不是"实测无差异"。
+    # 这一点只能由数据自己承认: 逐世界成本必须与完整方法逐位相同。
+    def wc(d, arm):
+        return {(r["seed"], w["world"]): w["cost"]
+                for r in d["runs"] if r["arm"] == arm for w in r["worlds"]}
+
+    ref_sac = {(r["seed"], w["world"]): w["cost"]
+               for (a, _), r in base_a.items() if a == "sac_rule" for w in r["worlds"]}
+    var_sac = wc(abl_data["no_spot_reward_scale"], "sac_rule")
+    diff_n = sum(1 for k in var_sac if ref_sac.get(k) != var_sac[k])
+    c.plain("关掉现货放大后分层臂逐世界成本与完整方法逐位相同 (构造性零结果)",
+            ref_sac.keys() == var_sac.keys() and not diff_n, f"{diff_n} 个世界不同")
+    c.text("5.9 构造性零结果表述", "`sac_rule` 的逐世界成本与完整方法逐位相同")
 
     # 局限 4 的三条证据: 驱动脚本无 --no-* / 开关默认取反 / 主基准 JSON 自己写着三部件全开
     sh_txt = open("experiments/run_all_scenarios.sh", encoding="utf-8").read()
@@ -666,15 +886,43 @@ def main() -> int:
         c.plain("关掉交替后逐角色步数确实变了 (不是只改名字的零结果)",
                 g4[0] != g4[2] or g4[1] != g4[3],
                 f"完整 {g4[2]}/{g4[3]}, 变体 {g4[0]}/{g4[1]}")
-    check_doc_only(c, md, args.readme)
-    # README 复述了"这次审计共检查多少项主张": 这个数字只能由审计器自己说了算 (审计 N07)
-    token = f"{c.n + 1} 项主张"          # 本条自身也算一项, 与结尾打印的总数对齐
-    c.n += 1
-    txt = (open(args.readme, encoding="utf-8").read().replace("\u2212", "-")
-           if os.path.exists(args.readme) else "")
-    if token not in txt:
-        c.bad += 1
-        print(f"  [XX] README 的检查项数: 应写着 {token!r}, 实际找不到")
+    check_doc_only(c, md, args.readme, args.completion)
+    # 完成度评估报告复述了同一批数字: 三份文档必须同一口径, 不允许它单独漂移
+    if os.path.exists(args.completion):
+        cw = Checker(open(args.completion, encoding="utf-8").read())
+        lo_ex, hi_ex = sorted(expl.values())
+        for label, token in [
+            ("完成度 双 DRL 相对滚动规则均值", f"{means[('dual_sac', strong)]:+.2f}%"),
+            ("完成度 分层臂相对滚动规则均值", f"{means[('sac_rule', strong)]:+.2f}%"),
+            ("完成度 双 DRL 相对固定比例均值", f"{means[('dual_sac', base)]:+.2f}%"),
+            ("完成度 规则臂差距区间", f"{rb_lo:+.1f}%~{rb_hi:+.1f}%"),
+            ("完成度 第二个智能体增量", f"{mean_ds:+.2f}%"),
+            ("完成度 塑形两臂代价",
+             f"{sh[0]['delta_pct']:.2f}% 与 {sh[1]['delta_pct']:.2f}%"),
+            ("完成度 γ 掉档", f"{sh[0]['gamma_ref']:.3f}/{sh[1]['gamma_ref']:.3f} 掉到 "
+                             f"{sh[0]['gamma']:.3f}/{sh[1]['gamma']:.3f}"),
+            ("完成度 另两项 Δ",
+             f"{sp[0]['delta_pct']:+.2f}%/{sp[1]['delta_pct']:+.2f}% 与 {al['delta_pct']:+.2f}%"),
+            ("完成度 年度超配可解释区间", f"{lo_ex:.0f}%~{hi_ex:.0f}%"),
+            ("完成度 奖励量级比均值", f"均值 {mean_r:.1f}"),
+            ("完成度 中长期成本占比", f"占 {lo_s * 100:.0f}%~{hi_s * 100:.0f}%、均值 {mean_s * 100:.1f}%"),
+        ]:
+            cw.text(label, token)
+        cw.text("完成度 评估世界数", f"{len(worlds)} 个评估世界")
+        cw.text("完成度 消融评估世界数", f"{n_worlds} 个评估世界")
+        c.n += cw.n
+        c.bad += cw.bad
+    else:
+        print(f"  [!] 未找到 {args.completion}, 完成度文档的一致性检查本轮跳过")
+    # "这次审计共检查多少项主张"只能由审计器自己说了算 (审计 N07): 报告/README/完成度评估各复述一次
+    docs = [p for p in (args.md, args.readme, args.completion) if os.path.exists(p)]
+    token = f"{c.n + len(docs)} 项主张"
+    c.n += len(docs)
+    for path in docs:
+        txt = open(path, encoding="utf-8").read().replace("\u2212", "-")
+        if token not in txt:
+            c.bad += 1
+            print(f"  [XX] {path} 的检查项数: 应写着 {token!r}, 实际找不到")
     if args.verbose:
         print(f"  5.9 重算 Δ: 塑形 {sh[0]['delta_pct']:.3f}%/{sh[1]['delta_pct']:.3f}%, "
               f"奖励放大 {sp[0]['delta_pct']:.3f}%/{sp[1]['delta_pct']:.3f}%, "
