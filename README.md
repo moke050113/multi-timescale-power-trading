@@ -105,8 +105,8 @@ Qoder_project/
 │   ├── merge_four_arm_parts.py      # 合并逐场景分片 + 预算/覆盖校验
 │   ├── plot_four_arm_results.py     # 结果出图 (配对改进 / 学习臂vs规则臂 / γ_m 剖面)
 │   ├── report_tables.py             # 由合并 JSON 渲染报告 5.4 节表格
-│   ├── verify_report_numbers.py     # 报告正文数字审计 (表格逐字符比对 + 会计不变量 + 216 项主张)
-│   ├── selfcheck_verifier.py        # 审计器反向用例 (故意改错 15 处, 确认检查不是空转)
+│   ├── verify_report_numbers.py     # 报告正文数字审计 (表格逐字符比对 + 会计不变量 + 266 项主张)
+│   ├── selfcheck_verifier.py        # 审计器反向用例 (故意改错 29 处变异, 确认检查不是空转)
 │   ├── measure_reward_scale.py      # 单位奖励量级比与成本分层占比实测
 │   ├── md_to_pdf.py                 # 报告排版导出
 │   ├── verify_pdf_text.py           # PDF 成品复核 (抽取文本查作废数字/5.9 表格截断)
@@ -179,7 +179,7 @@ PYTHONIOENCODING=utf-8 python experiments/report_tables.py         --in results/
 
 # 正文数字审计：改动报告任何 5.x / 5.9 数值后必跑（不符即非零退出码）
 PYTHONIOENCODING=utf-8 python experiments/verify_report_numbers.py
-# 反向用例：故意把正文/README 改错 15 处，确认上面的检查真的会失败
+# 反向用例：故意把正文/README/结果 JSON 改错 29 处变异，确认上面的检查真的会失败
 PYTHONIOENCODING=utf-8 python experiments/selfcheck_verifier.py
 # 排版导出与成品复核（正文过审计 != PDF 也对）
 PYTHONIOENCODING=utf-8 python experiments/md_to_pdf.py
@@ -357,7 +357,7 @@ PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py \
   **只有未来暴露成本塑形过判读门槛**（关掉后 `sac_rule` +1.70%、`dual_sac` +1.40%，均 30/30 世界更贵、
   3/3 种子同号；月内覆盖率均值 0.973/0.967 → 0.875/0.848），另两项 Δ 为 +0.26%/+0.07% 与 +0.05%，
   低于 0.4% 噪声门槛且逐种子符号不一致 → 检不出，不等于无用。同时把正文数字审计扩到 216 项主张
-  （含表 5.9-1 逐格重算 + README 跨文档一致性），反向用例增至 15 条变异且全部被抓出；
+  （含表 5.9-1 逐格重算 + README 跨文档一致性），反向用例当时 15 条、迭代 8.11 扩到 29 处变异且全部被抓出；
   并据消融结果删掉"据消融把方案简化"的说法（现行主基准三部件全开）
 
 ## 🎓 课程信息

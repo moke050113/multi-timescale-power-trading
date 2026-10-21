@@ -174,6 +174,20 @@ def check_doc_only(c: "Checker", md: str, readme_path: str) -> None:
     left = sorted(set(re.findall(r"<[A-Z0-9_]{2,}>", md)))
     c.plain("正文没有未填的占位符", not left, f"还剩 {left}")
 
+    # 反向用例的条数只能由自检脚本自己给出: 文档里手写一个数, 迟早和脚本脱钩 (审计 N07)
+    try:
+        import experiments.selfcheck_verifier as S
+    except Exception as exc:                                  # 导入失败也要报告, 不能默默跳过
+        c.plain("反向用例条数可读 (selfcheck_verifier 能被导入)", False, f"{type(exc).__name__}: {exc}")
+    else:
+        n_mut = len(S.MUTATIONS) + len(S.DATA_MUTATIONS)
+        token = f"{n_mut} 处变异"
+        c.text(f"附录 反向用例条数 = 脚本里的 {len(S.MUTATIONS)}+{len(S.DATA_MUTATIONS)}", token)
+        c.n += 1
+        if token not in readme_txt:
+            c.bad += 1
+            print(f"  [XX] README 的反向用例条数: 应写着 {token!r}, 实际找不到")
+
 
 def md_row(md: str, part: str, arm: str) -> list:
     """表 5.9-1 里 (剔除部件, 臂) 那一行的单元格; 没有该行返回空列表。"""
