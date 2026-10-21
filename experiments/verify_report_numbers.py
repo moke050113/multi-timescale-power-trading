@@ -1,10 +1,11 @@
-"""报告正文数字自检: 把 5.3~5.7 引用的数字从 results/four_arm_benchmark.json 重算一遍。
+"""报告正文数字自检: 把 5.3~5.7 与 5.9 引用的数字从 results/ 重算一遍。
 
-存在的理由: 本文的性能结论全部落在正文叙述里 (配对改进、覆盖率剖面、成交均价)。
+存在的理由: 本文的性能结论全部落在正文叙述里 (配对改进、覆盖率剖面、成交均价、消融 Δ)。
 人工填数一旦与 JSON 脱钩就成了虚假结论, 所以每条主张都同时检查两件事:
   (1) 报告 md 里确实写着这个数;
   (2) 从 JSON 重算出来的数与它相符 (容差按正文给出的小数位取)。
-另外表 5.4-1 ~ 5.4-4 必须与 `report_tables.py` 当场生成的表格逐字符相同。
+另外表 5.4-1 ~ 5.4-4 必须与 `report_tables.py` 当场生成的表格逐字符相同,
+表 5.9-1 必须与 `summarize_ablation.py` 当场重算的配对结果逐格相符。
 
 用法:
     python experiments/verify_report_numbers.py
@@ -12,7 +13,10 @@
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -20,8 +24,20 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from experiments.plot_four_arm_results import index_runs, load          # noqa: E402
 from experiments.report_tables import layer_share, render, seed_pairwise  # noqa: E402
+from experiments.summarize_ablation import load_base, summarize          # noqa: E402
 
 LEARNERS = ("sac_rule", "dual_sac")
+THRESHOLD = 0.4            # 5.1 节的运行间噪声门槛 (%), 小于它的差值不得用作结论
+ABL_ROWS = {"未来暴露成本塑形": "no_exposure_shaping",
+            "现货奖励放大": "no_spot_reward_scale",
+            "三阶段交替训练": "no_alternating"}
+# 每个变体应当"只关掉自己那一项", 其余两项仍按完整方法开启
+ABL_EXPECT = {"no_exposure_shaping": {"exposure_shaping": False, "scale_spot_reward": True,
+                                      "alternating": True},
+              "no_spot_reward_scale": {"exposure_shaping": True, "scale_spot_reward": False,
+                                       "alternating": True},
+              "no_alternating": {"exposure_shaping": True, "scale_spot_reward": True,
+                                 "alternating": False}}
 
 
 class Checker:
@@ -64,10 +80,43 @@ def rng(values) -> tuple:
     return float(a.min()), float(a.max())
 
 
+def nums(cell: str) -> list:
+    """取一个 md 单元格里的带符号数字 (排版减号先统一, 千位逗号去掉)。"""
+    s = cell.replace("\u2212", "-").replace(",", "")
+    return [float(x) for x in re.findall(r"[+-]?\d+(?:\.\d+)?", s)]
+
+
+def md_row(md: str, part: str, arm: str) -> list:
+    """表 5.9-1 里 (剔除部件, 臂) 那一行的单元格; 没有该行返回空列表。"""
+    pre = f"| {part} | `{arm}` |"
+    for line in md.replace("\u2212", "-").splitlines():
+        if line.startswith(pre):
+            return [x.strip() for x in line.strip().strip("|").split("|")]
+    return []
+
+
+def phase_counts(path: str) -> dict:
+    """按 "消融开关" 行分段统计训练阶段标记行数; 主基准日志没有开关行, 归入 "完整方法"。"""
+    out, cur = {}, "完整方法"
+    for line in open(path, encoding="utf-8", errors="replace"):
+        m = re.search(r"消融开关 .*?: (\[.*?\])", line)
+        if m:
+            cur = m.group(1)
+            out.setdefault(cur, {})
+            continue
+        for t in re.findall(r"\[(P[A-Za-z0-9_-]+)\]", line):
+            d = out.setdefault(cur, {})
+            d[t] = d.get(t, 0) + 1
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", default="results/four_arm_benchmark.json")
     ap.add_argument("--md", default="report/课程设计报告.md")
+    ap.add_argument("--parts", default="results/parts/ablation_*.json")
+    ap.add_argument("--summary", default="results/ablation_summary.json")
+    ap.add_argument("--readme", default="README.md")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -239,6 +288,175 @@ def main() -> int:
         print(f"  表 5.4-3 口径的中长期占比: {lo:.1f}% ~ {hi:.1f}%, "
               f"均值 {float(np.mean(share)):.1f}%")
     c.text("5.4-3 按世界均值口径标注", "按世界均值")
+
+    # ---------- 8. 5.9 消融 (数据源: results/parts/ablation_*.json + 主基准场景 A 分片) ----------
+    base_meta, base_a = load_base(args.json, S["A"])
+    parts = sorted(glob.glob(args.parts))
+    if len(parts) != len(ABL_ROWS):
+        print(f"  [XX] 消融分片 {len(parts)} 个, 报告写了 {len(ABL_ROWS)} 个部件: {parts}")
+        return 1
+    re_abl, worlds_of, n_worlds, n_fail = {}, {}, 0, 0
+    for p in parts:
+        v = os.path.basename(p)[len("ablation_"):-len(".json")]
+        d = load(p)
+        c.n += 1
+        if d["meta"].get("ablation") != ABL_EXPECT[v]:
+            c.bad += 1
+            print(f'  [XX] {v}: meta.ablation 不是 "只关这一项" {d["meta"].get("ablation")}')
+        re_abl[v] = {a["arm"]: a for a in summarize(v, p, base_meta, base_a)["arms"]}
+        worlds_of[v] = sum(len(r["worlds"]) for r in d["runs"])
+        n_worlds += worlds_of[v]
+        n_fail += len(d["failures"])
+
+    def seeds_of(a):
+        return [s["delta_pct"] for s in sorted(a["seeds"], key=lambda z: z["seed"])]
+
+    def worse(a):
+        return tuple(int(x) for x in a["worse_worlds"].split("/"))
+
+    # 落盘的汇总表必须与当场重算一致 (防止 parts 重跑后 summary 变陈旧)
+    summ = json.load(open(args.summary, encoding="utf-8"))
+    FIELDS = ("cost", "cost_ref", "delta_pct", "alpha", "alpha_ref",
+              "gamma", "gamma_ref", "intensity", "intensity_ref")
+    for res in summ["results"]:
+        for a in res["arms"]:
+            ref = re_abl[res["variant"]][a["arm"]]
+            c.n += 1
+            bad = [f for f in FIELDS if abs(a[f] - ref[f]) > 1e-9]
+            if bad:
+                c.bad += 1
+                print(f"  [XX] {args.summary} 的 {res['variant']}/{a['arm']} 字段与重算不符: {bad}")
+
+    # 表 5.9-1 逐格重算
+    for part, v in ABL_ROWS.items():
+        for arm in LEARNERS:
+            a, cells = re_abl[v].get(arm), md_row(md, part, arm)
+            if a is None or not cells:
+                c.n += 1
+                if (a is not None) != bool(cells):
+                    c.bad += 1
+                    print(f"  [XX] 表 5.9-1 {part}/{arm}: 重算与正文一方缺失 "
+                          f"(重算={a is not None}, 正文行={bool(cells)})")
+                continue
+            c.n += 1
+            if len(cells) != 9:
+                c.bad += 1
+                print(f"  [XX] 表 5.9-1 行列数不为 9: {part}/{arm} -> {cells}")
+                continue
+            wn, nn = worse(a)
+            c.value(f"5.9-1 {part}/{arm} 变体成本", a["cost"], nums(cells[2])[0], cells[2], 0.5)
+            c.value(f"5.9-1 {part}/{arm} 配对差", a["delta_pct"], nums(cells[3])[0], cells[3], 0.005)
+            c.value(f"5.9-1 {part}/{arm} 更贵世界数", float(wn), nums(cells[4])[0], cells[4], 0)
+            c.value(f"5.9-1 {part}/{arm} 配对世界总数", float(nn), nums(cells[4])[1], cells[4], 0)
+            for i, (comp, wri) in enumerate(zip(seeds_of(a), nums(cells[5]))):
+                c.value(f"5.9-1 {part}/{arm} 第 {i + 1} 个种子 Δ", comp, wri, cells[5], 0.005)
+            for field, cell in (("alpha", cells[6]), ("gamma", cells[7]), ("intensity", cells[8])):
+                c.value(f"5.9-1 {part}/{arm} {field}", a[field], nums(cell)[0], cell, 5e-4)
+                c.value(f"5.9-1 {part}/{arm} {field} (完整)",
+                        a[field + "_ref"], nums(cell)[1], cell, 5e-4)
+
+    # 正文与摘要/1.3/4.4/6.1 里的消融数字: 由重算值拼出字符串, 要求原文照此写着
+    sh = [re_abl["no_exposure_shaping"][a] for a in LEARNERS]
+    sp = [re_abl["no_spot_reward_scale"][a] for a in LEARNERS]
+    al = re_abl["no_alternating"]["dual_sac"]
+    for arm in LEARNERS:
+        ref_cost = float(np.mean([r["mean_cost"] for (a, _), r in base_a.items() if a == arm]))
+        c.text(f"5.9 参照成本 {arm}", f"`{arm}` {ref_cost:,.0f} 元")
+    c.text("5.9 评估世界总数", f"{n_worlds} 个评估世界")
+    c.text("5.9 各变体世界数", "（" + "+".join(str(worlds_of[v]) for v in ABL_ROWS.values()) + "）")
+    c.text("5.9 验收失败条数", f"验收失败 **{n_fail} 条**")
+    c.text("5.9 冻结预算", f"{base_meta['episodes_per_sac_arm']} 回合、"
+                          f"{base_meta['eval_worlds']} 个配对世界")
+    c.text("5.9 冻结种子", "/".join(str(s) for s in base_meta["seeds"]))
+    c.text("5.9 冻结阶段划分", "+".join(f"{p * 100:.0f}%" for p in base_meta["phase_split"]))
+    c.text("5.9 塑形代价 (摘要/结论一/6.1)", f"{sh[0]['delta_pct']:.2f}% 与 {sh[1]['delta_pct']:.2f}%")
+    c.text("5.9 塑形代价区间 (1.3)",
+           f"贵 {min(a['delta_pct'] for a in sh):.2f}%~{max(a['delta_pct'] for a in sh):.2f}%")
+    c.text("5.9 结论三 另两项 Δ",
+           f"+{sp[0]['delta_pct']:.2f}%/+{sp[1]['delta_pct']:.2f}% 与 +{al['delta_pct']:.2f}%")
+    c.text("4.4 另两项 Δ",
+           f"+{sp[0]['delta_pct']:.2f}%/+{sp[1]['delta_pct']:.2f}%（奖励放大）与 "
+           f"+{al['delta_pct']:.2f}%（交替训练）")
+    for sep in (" / ", "/"):      # 5.9 结论二用宽排, 6.1 用紧排
+        c.text(f"结论二 γ 掉档 (sep={sep!r})",
+               f"{sh[0]['gamma_ref']:.3f}{sep}{sh[1]['gamma_ref']:.3f} 掉到 "
+               f"{sh[0]['gamma']:.3f}{sep}{sh[1]['gamma']:.3f}")
+    c.text("结论二 α 掉档",
+           f"{sh[0]['alpha_ref']:.3f} / {sh[1]['alpha_ref']:.3f} 掉到 "
+           f"{sh[0]['alpha']:.3f} / {sh[1]['alpha']:.3f}")
+    c.text("结论二 强度旁证 (sac_rule)", f"{sh[0]['intensity_ref']:.3f} 升到 {sh[0]['intensity']:.3f}")
+    n_seed = len(seeds_of(sh[0]))
+    c.text("结论一 种子同号", f"个配对世界更贵、{n_seed}/{n_seed} 种子同号")
+    c.text("结论三 符号不一致的例子",
+           "`dual_sac` 关奖励放大为 " + "/".join(f"{d:+.2f}" for d in seeds_of(sp[1])))
+
+    # README 复述了 5.9 的 Δ 与 γ 掉档: 跨文档必须与重算一致, 不允许各说一套
+    if os.path.exists(args.readme):
+        cr = Checker(open(args.readme, encoding="utf-8").read())
+        cr.text("README 塑形 γ 掉档",
+                f"{sh[0]['gamma_ref']:.3f}/{sh[1]['gamma_ref']:.3f} 掉到 "
+                f"{sh[0]['gamma']:.3f}/{sh[1]['gamma']:.3f}")
+        for part, v in ABL_ROWS.items():
+            line = next((l for l in cr.md.splitlines() if l.startswith(f"| {part} |")), "")
+            cells = [x.strip() for x in line.strip().strip("|").split("|")] if line else []
+            cr.n += 1
+            if len(cells) != 4:
+                cr.bad += 1
+                print(f"  [XX] README 消融表 {part} 行缺失或列数不为 4: {cells}")
+                continue
+            for arm, col in (("sac_rule", 1), ("dual_sac", 2)):
+                a = re_abl[v].get(arm)
+                if a is None:
+                    cr.n += 1
+                    if cells[col] != "—":
+                        cr.bad += 1
+                        print(f"  [XX] README {part}/`{arm}` 没跑, 表里却写着 {cells[col]!r}")
+                    continue
+                wr = nums(cells[col])
+                cr.value(f"README {part}/{arm} Δ", a["delta_pct"], wr[0], cells[col], 0.005)
+                cr.value(f"README {part}/{arm} 更贵世界数", float(worse(a)[0]), wr[1],
+                         cells[col], 0)
+        c.n += cr.n
+        c.bad += cr.bad
+    elif args.verbose:
+        print(f"  ({args.readme} 不存在, 跳过跨文档一致性)")
+
+    ok1 = all(a["delta_pct"] > THRESHOLD and all(d > 0 for d in seeds_of(a))
+              and worse(a)[0] == worse(a)[1] for a in sh)
+    c.value("5.9 结论一: 塑形两臂 Δ>门槛、逐种子同号、世界全更贵", float(ok1), 1.0,
+            "唯一通过判读门槛的部件", 0)
+    ok3 = all(a["delta_pct"] < THRESHOLD and len({d > 0 for d in seeds_of(a)}) == 2
+              and worse(a)[0] < worse(a)[1] for a in sp + [al])
+    c.value("5.9 结论三: 另两项 Δ<门槛且逐种子符号不一致", float(ok3), 1.0,
+            "逐种子符号不一致", 0)
+
+    # 局限 4 的三条证据: 驱动脚本无 --no-* / 开关默认取反 / 主基准 JSON 里确实没有该字段
+    sh_txt = open("experiments/run_all_scenarios.sh", encoding="utf-8").read()
+    c.value("5.9 局限4: 主基准调用不含任何 --no-* 开关", float("--no-" not in sh_txt), 1.0,
+            "不含任何 `--no-*` 开关", 0)
+    drv = open("experiments/run_four_arm_benchmark.py", encoding="utf-8").read().splitlines()
+    c.value("5.9 局限4: 驱动 372-376 行把三项默认置为开启",
+            float("\n".join(drv[371:376]).count("not args.no_")), 3,
+            "run_four_arm_benchmark.py:372-376", 0)
+    c.value("5.9 局限4: 主基准 JSON 无 meta.ablation 字段",
+            float("ablation" not in base_meta), 1.0,
+            "主基准分片产生于 `meta.ablation` 字段加入之前", 0)
+
+    # 交替训练确实被改掉的旁证: 主基准日志有 P1/P2/P3, 该变体只有 P-joint (日志未入库, 有则检)
+    full_log, abl_log = "results/logs/four_arm_full.log", "results/logs/ablation.log"
+    if os.path.exists(full_log) and os.path.exists(abl_log):
+        cnt = [phase_counts(full_log)["完整方法"].get(t, 0)
+               for t in ("P1-midlong", "P2-spot", "P3-joint")]
+        c.text("5.9 结论三: 完整方法三阶段标记行数", "/".join(map(str, cnt)) + " 行")
+        only_joint = set(phase_counts(abl_log).get("['alternating']", {})) == {"P-joint"}
+        c.value("5.9 结论三: no_alternating 只有 [P-joint] 阶段", float(only_joint), 1.0,
+                "该变体只有单一 `[P-joint]` 标记", 0)
+    elif args.verbose:
+        print("  (训练日志不在仓库里, 跳过阶段标记旁证)")
+    if args.verbose:
+        print(f"  5.9 重算 Δ: 塑形 {sh[0]['delta_pct']:.3f}%/{sh[1]['delta_pct']:.3f}%, "
+              f"奖励放大 {sp[0]['delta_pct']:.3f}%/{sp[1]['delta_pct']:.3f}%, "
+              f"交替 {al['delta_pct']:.3f}%; 世界 {n_worlds}, 失败 {n_fail}")
     return c.finish()
 
 

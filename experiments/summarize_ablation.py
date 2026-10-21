@@ -79,6 +79,7 @@ def summarize(variant: str, path: str, base_meta: dict, base: dict) -> dict:
             "alpha": float(np.mean([x["alpha"] for x in rs])),
             "alpha_ref": float(np.mean([x["alpha_ref"] for x in rs])),
             "gamma": float(np.mean([x["gamma"] for x in rs])),
+            "gamma_ref": float(np.mean([x["gamma_ref"] for x in rs])),
             "intensity": float(np.mean([x["intensity"] for x in rs])),
             "intensity_ref": float(np.mean([x["intensity_ref"] for x in rs])),
             "seeds": rs,

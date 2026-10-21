@@ -1,0 +1,371 @@
+{
+  "base": "four_arm_benchmark.json",
+  "scenario": "A",
+  "budget_keys": [
+    "episodes_per_sac_arm",
+    "eval_worlds",
+    "phase_split",
+    "load_scenario"
+  ],
+  "results": [
+    {
+      "variant": "no_alternating",
+      "file": "ablation_no_alternating.json",
+      "ablation": {
+        "exposure_shaping": true,
+        "scale_spot_reward": true,
+        "alternating": false
+      },
+      "arms": [
+        {
+          "arm": "dual_sac",
+          "cost": 308539.2568299773,
+          "cost_ref": 308397.33793794794,
+          "delta_pct": 0.045960124773466095,
+          "per_seed_delta": [
+            0.096,
+            0.095,
+            -0.053
+          ],
+          "worse_worlds": "22/30",
+          "alpha": 0.8914603769920678,
+          "alpha_ref": 0.8925563493309477,
+          "gamma": 0.9703835441433863,
+          "gamma_ref": 0.9666867164432076,
+          "intensity": 0.6490342585369945,
+          "intensity_ref": 0.6853908363729714,
+          "seeds": [
+            {
+              "arm": "dual_sac",
+              "seed": 42,
+              "cost": 309530.7475862121,
+              "cost_ref": 309234.63026253454,
+              "delta_pct": 0.09572585065193216,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.893741243921926,
+              "alpha_ref": 0.8929396005914935,
+              "gamma": 0.9857231787234391,
+              "gamma_ref": 0.9815286975617324,
+              "intensity": 0.3791747383152445,
+              "intensity_ref": 0.7704394482076167
+            },
+            {
+              "arm": "dual_sac",
+              "seed": 142,
+              "cost": 308275.4508004197,
+              "cost_ref": 307981.6933848817,
+              "delta_pct": 0.09537576468998976,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.888234549718867,
+              "alpha_ref": 0.8917850518273536,
+              "gamma": 0.9560900113868069,
+              "gamma_ref": 0.9408444061472471,
+              "intensity": 0.7834770786265532,
+              "intensity_ref": 0.6469553848107655
+            },
+            {
+              "arm": "dual_sac",
+              "seed": 242,
+              "cost": 307811.5721033,
+              "cost_ref": 307975.69016642764,
+              "delta_pct": -0.053221241021523646,
+              "worse_worlds": 2,
+              "n_worlds": 10,
+              "alpha": 0.8924053373354106,
+              "alpha_ref": 0.8929443955739963,
+              "gamma": 0.9693374423199129,
+              "gamma_ref": 0.9776870456206431,
+              "intensity": 0.7844509586691857,
+              "intensity_ref": 0.6387776761005322
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "variant": "no_exposure_shaping",
+      "file": "ablation_no_exposure_shaping.json",
+      "ablation": {
+        "exposure_shaping": false,
+        "scale_spot_reward": true,
+        "alternating": true
+      },
+      "arms": [
+        {
+          "arm": "dual_sac",
+          "cost": 312707.71773056657,
+          "cost_ref": 308397.33793794794,
+          "delta_pct": 1.3984450159848798,
+          "per_seed_delta": [
+            0.89,
+            2.031,
+            1.274
+          ],
+          "worse_worlds": "30/30",
+          "alpha": 0.843552346630314,
+          "alpha_ref": 0.8925563493309477,
+          "gamma": 0.8480637791680635,
+          "gamma_ref": 0.9666867164432076,
+          "intensity": 0.7514425264464485,
+          "intensity_ref": 0.6853908363729714,
+          "seeds": [
+            {
+              "arm": "dual_sac",
+              "seed": 42,
+              "cost": 311986.7699923824,
+              "cost_ref": 309234.63026253454,
+              "delta_pct": 0.890077988547301,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8434879191826499,
+              "alpha_ref": 0.8929396005914935,
+              "gamma": 0.8476097826219859,
+              "gamma_ref": 0.9815286975617324,
+              "intensity": 0.7009366614123186,
+              "intensity_ref": 0.7704394482076167
+            },
+            {
+              "arm": "dual_sac",
+              "seed": 142,
+              "cost": 314236.87681212334,
+              "cost_ref": 307981.6933848817,
+              "delta_pct": 2.030915565254534,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8461681365399565,
+              "alpha_ref": 0.8917850518273536,
+              "gamma": 0.8511756843880548,
+              "gamma_ref": 0.9408444061472471,
+              "intensity": 0.8750340066850185,
+              "intensity_ref": 0.6469553848107655
+            },
+            {
+              "arm": "dual_sac",
+              "seed": 242,
+              "cost": 311899.50638719386,
+              "cost_ref": 307975.69016642764,
+              "delta_pct": 1.2743414941528046,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8410009841683352,
+              "alpha_ref": 0.8929443955739963,
+              "gamma": 0.8454058704941498,
+              "gamma_ref": 0.9776870456206431,
+              "intensity": 0.6783569112420083,
+              "intensity_ref": 0.6387776761005322
+            }
+          ]
+        },
+        {
+          "arm": "sac_rule",
+          "cost": 314374.48254504846,
+          "cost_ref": 309116.079805828,
+          "delta_pct": 1.7012284070305759,
+          "per_seed_delta": [
+            1.69,
+            1.709,
+            1.705
+          ],
+          "worse_worlds": "30/30",
+          "alpha": 0.8709081603091383,
+          "alpha_ref": 0.8901420151112988,
+          "gamma": 0.8745943656972166,
+          "gamma_ref": 0.9728355314013065,
+          "intensity": 0.418018780897061,
+          "intensity_ref": 0.09054822864774098,
+          "seeds": [
+            {
+              "arm": "sac_rule",
+              "seed": 42,
+              "cost": 314287.9653073548,
+              "cost_ref": 309066.67095572903,
+              "delta_pct": 1.6895352564386479,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8733593705769336,
+              "alpha_ref": 0.8917938735198826,
+              "gamma": 0.8765346245232113,
+              "gamma_ref": 0.9755952626873828,
+              "intensity": 0.4115512515107791,
+              "intensity_ref": 0.08134912446645709
+            },
+            {
+              "arm": "sac_rule",
+              "seed": 142,
+              "cost": 314929.12042108027,
+              "cost_ref": 309637.1642320888,
+              "delta_pct": 1.709055072792335,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8656331781572602,
+              "alpha_ref": 0.88838821205182,
+              "gamma": 0.8698564770601692,
+              "gamma_ref": 0.9612248008950891,
+              "intensity": 0.43381174430251124,
+              "intensity_ref": 0.12925066314637662
+            },
+            {
+              "arm": "sac_rule",
+              "seed": 242,
+              "cost": 313906.36190671026,
+              "cost_ref": 308644.4042296662,
+              "delta_pct": 1.705094891860745,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8737319321932212,
+              "alpha_ref": 0.8902439597621935,
+              "gamma": 0.8773919955082693,
+              "gamma_ref": 0.9816865306214476,
+              "intensity": 0.40869334687789277,
+              "intensity_ref": 0.061044898330389216
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "variant": "no_spot_reward_scale",
+      "file": "ablation_no_spot_reward_scale.json",
+      "ablation": {
+        "exposure_shaping": true,
+        "scale_spot_reward": false,
+        "alternating": true
+      },
+      "arms": [
+        {
+          "arm": "dual_sac",
+          "cost": 308599.5777820168,
+          "cost_ref": 308397.33793794794,
+          "delta_pct": 0.06607028440211199,
+          "per_seed_delta": [
+            -0.266,
+            0.155,
+            0.309
+          ],
+          "worse_worlds": "20/30",
+          "alpha": 0.891650951002603,
+          "alpha_ref": 0.8925563493309477,
+          "gamma": 0.9645209513424436,
+          "gamma_ref": 0.9666867164432076,
+          "intensity": 0.5721917407173249,
+          "intensity_ref": 0.6853908363729714,
+          "seeds": [
+            {
+              "arm": "dual_sac",
+              "seed": 42,
+              "cost": 308411.78081179847,
+              "cost_ref": 309234.63026253454,
+              "delta_pct": -0.26608472621951407,
+              "worse_worlds": 0,
+              "n_worlds": 10,
+              "alpha": 0.8935734677578593,
+              "alpha_ref": 0.8929396005914935,
+              "gamma": 0.9832046402550784,
+              "gamma_ref": 0.9815286975617324,
+              "intensity": 0.4611666420474648,
+              "intensity_ref": 0.7704394482076167
+            },
+            {
+              "arm": "dual_sac",
+              "seed": 142,
+              "cost": 308459.93724960263,
+              "cost_ref": 307981.6933848817,
+              "delta_pct": 0.15530687112005648,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8884257927641572,
+              "alpha_ref": 0.8917850518273536,
+              "gamma": 0.9461527423892477,
+              "gamma_ref": 0.9408444061472471,
+              "intensity": 0.4914888896048069,
+              "intensity_ref": 0.6469553848107655
+            },
+            {
+              "arm": "dual_sac",
+              "seed": 242,
+              "cost": 308927.0152846493,
+              "cost_ref": 307975.69016642764,
+              "delta_pct": 0.30898870830579356,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8929535924857926,
+              "alpha_ref": 0.8929443955739963,
+              "gamma": 0.9642054713830049,
+              "gamma_ref": 0.9776870456206431,
+              "intensity": 0.7639196904997031,
+              "intensity_ref": 0.6387776761005322
+            }
+          ]
+        },
+        {
+          "arm": "sac_rule",
+          "cost": 309930.65144306706,
+          "cost_ref": 309116.079805828,
+          "delta_pct": 0.26346696916114154,
+          "per_seed_delta": [
+            -0.017,
+            0.444,
+            0.364
+          ],
+          "worse_worlds": "24/30",
+          "alpha": 0.8873033327883922,
+          "alpha_ref": 0.8901420151112988,
+          "gamma": 0.9598053625327906,
+          "gamma_ref": 0.9728355314013065,
+          "intensity": 0.1339821250404283,
+          "intensity_ref": 0.09054822864774098,
+          "seeds": [
+            {
+              "arm": "sac_rule",
+              "seed": 42,
+              "cost": 309013.9103441949,
+              "cost_ref": 309066.67095572903,
+              "delta_pct": -0.01709109697001472,
+              "worse_worlds": 4,
+              "n_worlds": 10,
+              "alpha": 0.8930128897917161,
+              "alpha_ref": 0.8917938735198826,
+              "gamma": 0.976928125015308,
+              "gamma_ref": 0.9755952626873828,
+              "intensity": 0.07690625017276034,
+              "intensity_ref": 0.08134912446645709
+            },
+            {
+              "arm": "sac_rule",
+              "seed": 142,
+              "cost": 311011.1148542287,
+              "cost_ref": 309637.1642320888,
+              "delta_pct": 0.44372557200068174,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8818135662706602,
+              "alpha_ref": 0.88838821205182,
+              "gamma": 0.9418452716755663,
+              "gamma_ref": 0.9612248008950891,
+              "intensity": 0.1938490946544334,
+              "intensity_ref": 0.12925066314637662
+            },
+            {
+              "arm": "sac_rule",
+              "seed": 242,
+              "cost": 309766.9291307777,
+              "cost_ref": 308644.4042296662,
+              "delta_pct": 0.36376643245275764,
+              "worse_worlds": 10,
+              "n_worlds": 10,
+              "alpha": 0.8870835423028003,
+              "alpha_ref": 0.8902439597621935,
+              "gamma": 0.9606426909074974,
+              "gamma_ref": 0.9816865306214476,
+              "intensity": 0.13119103029409113,
+              "intensity_ref": 0.061044898330389216
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "sign": "delta_pct>0 = 关闭该部件后更贵 = 该部件在完整方法里有正贡献"
+}

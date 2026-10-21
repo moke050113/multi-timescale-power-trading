@@ -101,12 +101,15 @@ Qoder_project/
 │   ├── run_four_arm_benchmark.py    # 四臂配对世界基准 (唯一正式训练/评价入口)
 │   ├── run_all_scenarios.sh         # 逐场景长跑驱动 + 自动合并 (可中断续跑)
 │   ├── run_ablation.sh              # 消融驱动 (关闭暴露塑形/奖励放大/交替训练)
+│   ├── summarize_ablation.py        # 消融变体与主基准同种子同世界配对 (报告 5.9 节)
 │   ├── merge_four_arm_parts.py      # 合并逐场景分片 + 预算/覆盖校验
 │   ├── plot_four_arm_results.py     # 结果出图 (配对改进 / 学习臂vs规则臂 / γ_m 剖面)
 │   ├── report_tables.py             # 由合并 JSON 渲染报告 5.4 节表格
-│   ├── verify_report_numbers.py     # 报告正文数字审计 (表格逐字符比对 + 会计不变量 + 97 项主张)
+│   ├── verify_report_numbers.py     # 报告正文数字审计 (表格逐字符比对 + 会计不变量 + 216 项主张)
+│   ├── selfcheck_verifier.py        # 审计器反向用例 (故意改错 15 处, 确认检查不是空转)
 │   ├── measure_reward_scale.py      # 单位奖励量级比与成本分层占比实测
 │   ├── md_to_pdf.py                 # 报告排版导出
+│   ├── verify_pdf_text.py           # PDF 成品复核 (抽取文本查作废数字/5.9 表格截断)
 │   ├── test_settlement_accounting.py / test_environment_accounting.py
 │   ├── test_flexible_executor.py / test_information_boundary.py
 │   ├── test_agent_timing.py / test_four_arm_benchmark.py  # 43 个验收用例
@@ -174,8 +177,17 @@ bash experiments/run_all_scenarios.sh
 PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py --in results/four_arm_benchmark.json
 PYTHONIOENCODING=utf-8 python experiments/report_tables.py         --in results/four_arm_benchmark.json
 
-# 正文数字审计：改动报告任何 5.x 数值后必跑（不符即非零退出码）
+# 正文数字审计：改动报告任何 5.x / 5.9 数值后必跑（不符即非零退出码）
 PYTHONIOENCODING=utf-8 python experiments/verify_report_numbers.py
+# 反向用例：故意把正文/README 改错 15 处，确认上面的检查真的会失败
+PYTHONIOENCODING=utf-8 python experiments/selfcheck_verifier.py
+# 排版导出与成品复核（正文过审计 != PDF 也对）
+PYTHONIOENCODING=utf-8 python experiments/md_to_pdf.py
+PYTHONIOENCODING=utf-8 python experiments/verify_pdf_text.py
+
+# 5.9 节消融：三个剔除变体串行（每条约 1 小时），再与主基准同种子同世界配对
+bash experiments/run_ablation.sh
+PYTHONIOENCODING=utf-8 python experiments/summarize_ablation.py
 ```
 
 迭代 1–7 的历史训练/绘图脚本已随作废口径一起删除，训练与评价统一通过上面的四臂基准入口进行。
@@ -235,6 +247,21 @@ PYTHONIOENCODING=utf-8 python experiments/verify_report_numbers.py
 （B/C/D 30/30 世界全胜，A/E 不成立），方向可信但幅度未达 0.4% 门槛。
 全部表格与图由 `results/four_arm_benchmark.json` 经 `report_tables.py` /
 `plot_four_arm_results.py` 生成，无人工填数。
+
+### 消融（场景 A，同种子同世界配对，报告 5.9 节）
+
+三个设计部件各跑一个剔除变体（`experiments/run_ablation.sh`，冻结预算与主基准逐字段一致，
+150 个评估世界验收失败 0 条）。**正号 = 关掉该部件后更贵 = 该部件在完整方法里有正贡献**：
+
+| 剔除部件 | `sac_rule` | `dual_sac` | 判读 |
+|----------|------------|------------|------|
+| 未来暴露成本塑形 | **+1.70%** (30/30) | **+1.40%** (30/30) | 唯一超过 0.4% 门槛，3/3 种子同号 |
+| 现货奖励放大 | +0.26% (24/30) | +0.07% (20/30) | 门槛之下，逐种子符号不一致 |
+| 三阶段交替训练 | — | +0.05% (22/30) | 门槛之下，逐种子符号不一致 |
+
+关闭塑形后月内覆盖率均值从 0.973/0.967 掉到 0.875/0.848：三个部件里只有它在承重。
+该结论**仅限场景 A 与两条学习臂**，不足以支持"另两个部件可以删除"（旧版那样写过，已作废）。
+逐格数值由 `experiments/verify_report_numbers.py` 从 `results/parts/ablation_*.json` 当场重算核对。
 
 ### 已作废的内容
 
@@ -325,8 +352,13 @@ PYTHONIOENCODING=utf-8 python experiments/plot_four_arm_results.py \
 - 迭代8.9：报告正文数字改为可重复审计——`experiments/verify_report_numbers.py` 把表 5.4-1~4 与
   `report_tables.py` 输出逐字符比对、复核 600 个世界的会计不变量与 5.3/5.4/5.7 正文的 97 项主张，
   并用 4 处"故意改错"的变异确认检查器真的会失败；顺带修掉抽查发现的 9 处口径/归属错误
-- 迭代8.10：按新会计与信息边界重跑消融（暴露塑形 / 现货奖励放大 / 三阶段交替训练三个开关），
-  结果写入报告 5.9
+- 迭代8.10：按新会计与信息边界重跑消融（暴露塑形 / 现货奖励放大 / 三阶段交替训练三个开关，
+  场景 A × 两条学习臂 × 3 种子，150 个世界验收失败 0 条），结果写入报告 5.9：
+  **只有未来暴露成本塑形过判读门槛**（关掉后 `sac_rule` +1.70%、`dual_sac` +1.40%，均 30/30 世界更贵、
+  3/3 种子同号；月内覆盖率均值 0.973/0.967 → 0.875/0.848），另两项 Δ 为 +0.26%/+0.07% 与 +0.05%，
+  低于 0.4% 噪声门槛且逐种子符号不一致 → 检不出，不等于无用。同时把正文数字审计扩到 216 项主张
+  （含表 5.9-1 逐格重算 + README 跨文档一致性），反向用例增至 15 条变异且全部被抓出；
+  并据消融结果删掉"据消融把方案简化"的说法（现行主基准三部件全开）
 
 ## 🎓 课程信息
 
